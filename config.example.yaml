@@ -1,0 +1,67 @@
+listen_addr: ":9101"
+
+targets:
+  # OpenAI GPT-4o
+  - name: openai-gpt4o
+    endpoint: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY}"
+    model: "gpt-4o"
+    api_format: openai
+    timeout: 30s
+    interval: 60s
+
+  # Anthropic Claude
+  - name: anthropic-claude
+    endpoint: "https://api.anthropic.com"
+    api_key: "${ANTHROPIC_API_KEY}"
+    model: "claude-sonnet-4-20250514"
+    api_format: anthropic
+    timeout: 30s
+    interval: 60s
+
+  # Google Gemini
+  - name: google-gemini
+    endpoint: "https://generativelanguage.googleapis.com"
+    api_key: "${GOOGLE_API_KEY}"
+    model: "gemini-2.0-flash"
+    api_format: google
+    timeout: 30s
+    interval: 60s
+
+  # 阿里百炼 (DashScope - OpenAI 兼容接口)
+  - name: dashscope-qwen
+    endpoint: "https://dashscope.aliyuncs.com/compatible-mode"
+    api_key: "${DASHSCOPE_API_KEY}"
+    model: "qwen-plus"
+    api_format: openai
+    timeout: 30s
+    interval: 60s
+
+  # 字节方舟 (Ark - OpenAI 兼容接口)
+  - name: ark-pro
+    endpoint: "https://ark.cn-beijing.volces.com/api"
+    api_key: "${ARK_API_KEY}"
+    model: "${ARK_ENDPOINT_ID}"
+    api_format: openai
+    timeout: 30s
+    interval: 60s
+
+  # 自定义代理 API (OpenAI 兼容)
+  # 支持 chat_path 自定义路径，extra_headers 自定义请求头
+  - name: my-proxy
+    endpoint: "https://my-proxy.example.com"
+    api_key: "${PROXY_API_KEY}"
+    model: "gpt-4o"
+    api_format: openai
+    chat_path: "/v1/chat/completions"   # 可改为代理的自定义路径
+    extra_headers:
+      X-Custom-Auth: "${PROXY_TOKEN}"
+    timeout: 30s
+    interval: 60s
+
+  # Local Ollama (OpenAI-compatible)
+  # - name: local-ollama
+  #   endpoint: "http://localhost:11434"
+  #   model: "llama3"
+  #   api_format: openai
+  #   interval: 30s
