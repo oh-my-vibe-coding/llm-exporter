@@ -25,15 +25,15 @@ func NewAnthropic(t config.Target) Prober {
 	}
 }
 
-func (p *anthropicProber) Probe(ctx context.Context) (*ProbeResult, error) {
+func (p *anthropicProber) Probe(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
 	result := &ProbeResult{}
 
 	body := map[string]any{
 		"model":      p.target.Model,
 		"stream":     true,
-		"max_tokens": p.target.MaxTokens,
+		"max_tokens": params.MaxTokens,
 		"messages": []map[string]string{
-			{"role": "user", "content": probePrompt(p.target.Prompt)},
+			{"role": "user", "content": probePrompt(params.Prompt)},
 		},
 	}
 
@@ -59,19 +59,22 @@ func (p *anthropicProber) Probe(ctx context.Context) (*ProbeResult, error) {
 	if p.target.APIKey != "" {
 		req.Header.Set("x-api-key", p.target.APIKey)
 	}
+	for k, v := range p.target.ExtraHeaders {
+		req.Header.Set(k, v)
+	}
 
 	start := time.Now()
 	resp, err := p.client.Do(req)
 	if err != nil {
 		result.Duration = time.Since(start)
-		result.ConnectDuration = timings.duration(start)
+		result.ConnectDuration = timings.duration()
 		result.ErrorType = classifyNetworkError(err)
 		result.Error = err
 		return result, err
 	}
 	defer resp.Body.Close()
 
-	result.ConnectDuration = timings.duration(start)
+	result.ConnectDuration = timings.duration()
 
 	if resp.StatusCode != http.StatusOK {
 		result.Duration = time.Since(start)
@@ -83,6 +86,7 @@ func (p *anthropicProber) Probe(ctx context.Context) (*ProbeResult, error) {
 
 	reader := NewSSEReader(resp.Body)
 	var ttftRecorded bool
+	var textBuf strings.Builder
 
 	for {
 		event, err := reader.Next()
@@ -114,9 +118,12 @@ func (p *anthropicProber) Probe(ctx context.Context) (*ProbeResult, error) {
 			if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
 				continue
 			}
-			if !ttftRecorded && delta.Delta.Type == "text_delta" && delta.Delta.Text != "" {
-				result.TTFT = time.Since(start)
-				ttftRecorded = true
+			if delta.Delta.Type == "text_delta" && delta.Delta.Text != "" {
+				textBuf.WriteString(delta.Delta.Text)
+				if !ttftRecorded {
+					result.TTFT = time.Since(start)
+					ttftRecorded = true
+				}
 			}
 		case "message_delta":
 			var md anthropicMessageDelta
@@ -131,6 +138,7 @@ func (p *anthropicProber) Probe(ctx context.Context) (*ProbeResult, error) {
 
 	result.Duration = time.Since(start)
 	result.TotalTokens = result.InputTokens + result.OutputTokens
+	result.ResponseText = textBuf.String()
 	result.Success = ttftRecorded
 	if !ttftRecorded {
 		result.ErrorType = "parse_error"

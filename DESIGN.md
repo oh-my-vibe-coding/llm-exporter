@@ -20,7 +20,7 @@
 1. **端到端可用性探测** — 定期向 LLM API 发起真实的流式请求，验证服务是否正常响应
 2. **分阶段延迟测量** — 分别测量连接建立（DNS+TCP+TLS）、首 Token 延迟（TTFT）、完整请求时长
 3. **Token 消耗与生成速率** — 采集每次探测的输入/输出 token 数和生成速率
-4. **多供应商统一** — 支持 OpenAI、Anthropic、Google Gemini 及所有 OpenAI 兼容服务（阿里百炼、字节方舟、自定义代理等）
+4. **多供应商统一** — 支持 OpenAI、Anthropic、Google Gemini、Azure OpenAI 及所有 OpenAI 兼容服务（阿里百炼、字节方舟、DeepSeek、Mistral、OpenRouter、自定义代理等）
 5. **最小外部依赖** — 不引入任何 LLM SDK，仅使用 HTTP + SSE 协议直接交互，3 个直接依赖
 
 ### 1.3 非目标
@@ -59,6 +59,7 @@
 │  │                  Prometheus Registry                       │   │
 │  │  ProbeSuccess | ProbeDuration | ProbeTTFT | ProbeTokens   │   │
 │  │  ProbeConnectDuration | ProbeTokenRate | ProbeErrors       │   │
+│  │  ProbeLastSuccess                                          │   │
 │  └───────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────┘
          │                    │              │
@@ -96,10 +97,12 @@ llm-exporter/
 │   │   ├── prober.go                 # Prober 接口、工厂函数、HTTP 客户端、连接追踪
 │   │   ├── sse.go                    # SSE 事件流解析器
 │   │   ├── errors.go                 # 错误分类
-│   │   ├── openai.go                 # OpenAI 兼容协议探测
+│   │   ├── openai.go                 # OpenAI 兼容协议探测（流式/非流式）
 │   │   ├── anthropic.go              # Anthropic 协议探测
-│   │   └── google.go                 # Google Gemini 协议探测
-│   └── scheduler/scheduler.go        # 目标调度、指标更新与热重载
+│   │   ├── google.go                 # Google Gemini 协议探测
+│   │   └── azure.go                  # Azure OpenAI 协议探测（流式/非流式）
+│   ├── scheduler/scheduler.go        # 目标调度、指标更新、热重载、告警、响应验证
+│   └── version/version.go            # 版本信息（通过 ldflags 注入）
 ```
 
 **依赖关系**：
@@ -174,14 +177,14 @@ TokenRate = OutputTokens / Generation
 
 三种 API 格式的 SSE 处理差异：
 
-| 维度 | OpenAI | Anthropic | Google Gemini |
-|------|--------|-----------|---------------|
-| 请求路径 | `POST /v1/chat/completions` | `POST /v1/messages` | `POST /v1beta/models/{model}:streamGenerateContent?alt=sse` |
-| 启用流式 | `"stream": true` | `"stream": true` | URL 参数 `alt=sse` |
-| 流结束标志 | `data: [DONE]` | `event: message_stop` | `io.EOF` |
-| TTFT 判定 | `choices[0].delta.content != ""` | `event: content_block_delta` + `delta.type == "text_delta"` | `candidates[0].content.parts[0].text != ""` |
-| Token 用量 | 最后一个 chunk 的 `usage` 字段（需 `stream_options.include_usage`） | `message_start` 含 input_tokens，`message_delta` 含 output_tokens | `usageMetadata` 字段 |
-| 认证方式 | `Authorization: Bearer <key>` | `x-api-key: <key>` + `anthropic-version` | URL 参数 `key=<key>` |
+| 维度 | OpenAI | Anthropic | Google Gemini | Azure OpenAI |
+|------|--------|-----------|---------------|--------------|
+| 请求路径 | `POST /v1/chat/completions` | `POST /v1/messages` | `POST /v1beta/models/{model}:streamGenerateContent?alt=sse` | `POST /openai/deployments/{model}/chat/completions?api-version=...` |
+| 启用流式 | `"stream": true` | `"stream": true` | URL 参数 `alt=sse` | `"stream": true` |
+| 流结束标志 | `data: [DONE]` | `event: message_stop` | `io.EOF` | `data: [DONE]` |
+| TTFT 判定 | `choices[0].delta.content != ""` | `event: content_block_delta` + `delta.type == "text_delta"` | `candidates[0].content.parts[0].text != ""` | 同 OpenAI |
+| Token 用量 | 最后一个 chunk 的 `usage` 字段（需 `stream_options.include_usage`） | `message_start` 含 input_tokens，`message_delta` 含 output_tokens | `usageMetadata` 字段 | 同 OpenAI |
+| 认证方式 | `Authorization: Bearer <key>` | `x-api-key: <key>` + `anthropic-version` | URL 参数 `key=<key>` | `api-key: <key>` |
 
 SSE 解析器（`sse.go`）是共享组件，处理 `event:` 和 `data:` 字段的解析，支持多行 data。各协议探测器只需处理自己的 JSON 结构。
 
@@ -212,9 +215,11 @@ ConnectDuration = max(TLSHandshakeDone, ConnectDone, GotConn) - min(DNSStart, Co
 | HTTP 401/403 | `auth` | 认证失败 |
 | HTTP 429 | `rate_limit` | 触发限流 |
 | 其他 HTTP 错误 | `api_error` | 服务端返回非 200 |
-| 连接超时 / context deadline | `timeout` | 包含 `net.Error.Timeout()` 或 context 错误 |
+| 连接超时 / context deadline | `timeout` | 包含 `net.Error.Timeout()` 或 context deadline exceeded |
+| 请求被取消 | `canceled` | context.Canceled（热重载或优雅关闭期间） |
 | DNS/TCP/TLS 失败 | `network` | 其他网络层错误 |
 | 流解析失败 / 无内容 | `parse_error` | SSE 解析异常或流中无 content |
+| 响应内容不匹配 | `validation_error` | 配置了 `expect_pattern` 但响应未匹配 |
 
 ### 3.6 Token Rate 计算
 
@@ -261,12 +266,9 @@ func probePrompt(base string) string {
 - 供应商的 prompt caching 机制不会影响测量
 - 每次请求都经历完整的推理过程
 
-### 4.3 充足的输出量
+### 4.3 可配置的输出量
 
-默认 prompt 为 `"Count from 1 to 20, one number per line."`，`max_tokens = 100`。这种设计：
-- 产生约 40-80 个 output tokens（足够计算 token rate）
-- 输出结构化、可预测（便于确认模型正常工作）
-- 不会触发安全过滤或内容审核
+默认 prompt 为 `"Hi"`，`max_tokens = 20`，以最小化 API 成本。对需要精确 token rate 数据的场景，可调大 `max_tokens` 或使用自定义 prompt 来产生更多 token。
 
 ### 4.4 独立探测间隔
 
@@ -278,19 +280,29 @@ func probePrompt(base string) string {
 
 ```yaml
 listen_addr: ":9101"          # HTTP 监听地址
+
+# Webhook 告警（可选）
+webhook:
+  url: "https://hooks.example.com/webhook"
+  consecutive_failures: 3     # 连续失败 N 次后告警，默认 3
+
 targets:                      # 探测目标列表
   - name: "provider-name"     # 必填，用作 Prometheus label
     endpoint: "https://..."   # 必填，API 端点
     api_key: "${ENV_VAR}"     # API Key，支持环境变量展开
     model: "model-name"       # 必填，模型标识
-    api_format: "openai"      # openai | anthropic | google
+    api_format: "openai"      # openai | anthropic | google | azure
     prompt: "..."             # 自定义探测 prompt
+    prompts: ["A", "B"]       # 多 prompt 轮换（与 prompt 二选一）
     timeout: 30s              # 单次探测超时
-    interval: 60s             # 探测间隔
-    max_tokens: 100           # 最大输出 token 数
+    interval: 300s            # 探测间隔
+    max_tokens: 20            # 最大输出 token 数
+    stream: true              # 是否使用流式（默认 true）
+    api_version: "2024-10-21" # Azure API 版本（仅 azure 格式）
     chat_path: "/v1/chat/completions"  # 自定义 API 路径（仅 openai）
-    extra_headers:            # 额外 HTTP 头（仅 openai）
+    extra_headers:            # 额外 HTTP 头
       X-Custom: "value"
+    expect_pattern: "\\d+"    # 响应内容验证（正则表达式）
 ```
 
 ### 5.2 环境变量展开
@@ -317,10 +329,13 @@ func expandEnv(s string) string {
 |------|--------|------|
 | `listen_addr` | `:9101` | 避免与 Prometheus Server (9090) 冲突 |
 | `api_format` | `openai` | 大多数供应商提供 OpenAI 兼容接口 |
-| `prompt` | `Count from 1 to 20, one number per line.` | 产生充足 token 量 |
+| `prompt` | `Hi` | 最小化 token 消耗 |
 | `timeout` | `30s` | 覆盖大多数 LLM 响应时间 |
-| `interval` | `60s` | 平衡监控实时性与 API 成本 |
-| `max_tokens` | `100` | 足够计算 token rate，不浪费额度 |
+| `interval` | `300s` | 平衡监控实时性与 API 成本 |
+| `max_tokens` | `20` | 足够验证模型可用性，不浪费额度 |
+| `stream` | `true` | 流式模式，用于测量 TTFT |
+| `api_version` | `2024-10-21` | Azure OpenAI API 版本（仅 azure 格式） |
+| `webhook.consecutive_failures` | `3` | 连续失败告警阈值 |
 
 ### 5.4 命令行参数
 
@@ -328,6 +343,8 @@ func expandEnv(s string) string {
 |------|--------|------|
 | `--config` | `config.yaml` | 配置文件路径 |
 | `--watch-config` | `false` | 监听配置文件变化，自动热重载（推荐 K8s 使用） |
+| `--validate` | `false` | 校验配置文件是否合法，然后退出 |
+| `--version` | `false` | 打印版本信息并退出 |
 
 ## 6. Prometheus 指标
 
@@ -343,6 +360,7 @@ func expandEnv(s string) string {
 | `llm_probe_output_tokens` | Gauge | 输出 token 数 |
 | `llm_probe_total_tokens` | Gauge | 总 token 数 |
 | `llm_probe_token_rate` | Gauge | 生成速率（tok/s） |
+| `llm_probe_last_success_timestamp_seconds` | Gauge | 最后一次成功探测的 Unix 时间戳 |
 | `llm_probe_errors_total` | Counter | 错误计数（按 error_type） |
 
 ### 6.2 Label 设计
@@ -360,7 +378,7 @@ func expandEnv(s string) string {
 
 | Label | 说明 | 可选值 |
 |-------|------|--------|
-| `error_type` | 错误分类 | `timeout`, `auth`, `rate_limit`, `network`, `api_error`, `parse_error` |
+| `error_type` | 错误分类 | `timeout`, `canceled`, `auth`, `rate_limit`, `network`, `api_error`, `parse_error`, `validation_error` |
 
 ### 6.3 为什么 Token 指标用 Gauge 而非 Counter
 
@@ -386,17 +404,16 @@ Bucket 范围根据 LLM API 的实际延迟分布设计，确保 P50/P95/P99 分
 ### 7.1 启动流程
 
 ```
-1. 解析命令行参数（--config, --watch-config）
+1. 解析命令行参数（--config, --watch-config, --validate, --version）
 2. 加载并验证配置文件
 3. 创建 Prometheus Registry（含 Go/Process collectors）
 4. 注册所有自定义指标
 5. 为每个 target 创建 Prober
-6. 启动 Scheduler（每个 target 一个 goroutine）
-7. 各 goroutine 立即执行首次探测
-8. 如果启用 --watch-config，启动文件监听 goroutine
-9. 启动 HTTP Server（/metrics + /healthz + /-/reload）
-10. 等待信号：SIGHUP → 热重载，SIGINT/SIGTERM → 优雅关闭
-11. 优雅关闭：cancel context → 等待 5s → 退出
+6. 启动 Scheduler（每个 target 一个 goroutine，含随机启动 jitter）
+7. 如果启用 --watch-config，启动文件监听 goroutine
+8. 启动 HTTP Server（/metrics + /healthz + /-/reload + /api/v1/targets + /version）
+9. 等待信号：SIGHUP → 热重载，SIGINT/SIGTERM → 优雅关闭
+10. 优雅关闭：cancel context → 等待 5s → 退出
 ```
 
 ### 7.2 HTTP 端点
@@ -406,12 +423,18 @@ Bucket 范围根据 LLM API 的实际延迟分布设计，确保 P50/P95/P99 分
 | `/metrics` | GET | Prometheus 指标采集端点 |
 | `/healthz` | GET | 健康检查，始终返回 `200 ok` |
 | `/-/reload` | POST | 触发配置热重载，返回 `200 ok` 或 `500` 错误信息 |
+| `/api/v1/targets` | GET | 返回所有探测目标的当前状态（JSON 格式） |
+| `/version` | GET | 返回版本、commit、构建时间（JSON 格式） |
 
 ### 7.3 调度模型
 
 ```go
 func runTarget(ctx context.Context, target Target, prober Prober) {
-    probe(ctx, target, prober)       // 立即首次探测
+    // 随机启动 jitter，分散初始探测负载（0 ~ min(interval, 30s)）
+    jitter := randomDuration(min(target.Interval, 30*time.Second))
+    time.Sleep(jitter)
+
+    probe(ctx, target, prober)       // 首次探测
 
     ticker := time.NewTicker(target.Interval)
     for {
@@ -423,7 +446,7 @@ func runTarget(ctx context.Context, target Target, prober Prober) {
 }
 ```
 
-每个 target 在独立的 goroutine 中运行，互不干扰。探测函数 `probe()` 内部使用 `context.WithTimeout` 限制单次探测时间。
+每个 target 在独立的 goroutine 中运行，互不干扰。启动时带有随机 jitter（最多 30 秒），避免大量 target 同时发起首次探测。探测函数 `probe()` 内部使用 `context.WithTimeout` 限制单次探测时间。
 
 ### 7.4 信号处理与优雅关闭
 
@@ -452,11 +475,12 @@ func runTarget(ctx context.Context, target Target, prober Prober) {
 ```
 1. 重新读取并解析配置文件
 2. 调用 Scheduler.Reload():
-   a. 先 buildProbers() 验证新配置有效性
+   a. 先 buildRunners() 验证新配置有效性（含正则编译）
    b. 验证通过后才 Cancel 当前所有探测 goroutine
    c. WaitGroup.Wait() 等待所有 goroutine 退出
-   d. 替换 targets 和 probers
-   e. 启动新的探测 goroutine
+   d. 调用 metrics.Reset() 清理旧 target 的指标残留
+   e. 替换 targets、probers 和状态缓存
+   f. 启动新的探测 goroutine（含 jitter）
 3. 日志输出新的 target 列表
 ```
 
@@ -624,9 +648,23 @@ clamp_min(
 
 两者互补：Blackbox Exporter 检查 API 端点的网络可达性和 TLS 健康，LLM Exporter 验证模型服务的实际可用性。
 
-## 12. 未来扩展方向
+## 12. 已实现的扩展功能
 
-- **探测结果缓存 API** — 提供 `/api/v1/targets` 接口，返回各 target 最近探测结果的 JSON 格式
-- **Webhook 告警** — 内置简单的告警通知（连续 N 次失败时发送 webhook），不依赖 Alertmanager
-- **多 prompt 轮换** — 配置多个 prompt 轮换使用，测试模型在不同输入下的表现
-- **输出校验** — 可选的正则/关键词校验，检测模型是否返回了预期内容（如"是否真的在数数"）
+以下功能在 v2.0.0 中实现：
+
+- **探测结果缓存 API** — `/api/v1/targets` 接口返回各 target 最近探测结果的 JSON 格式，包含连续失败次数、总探测/成功次数等
+- **Webhook 告警** — 连续 N 次失败时自动发送 webhook POST 请求，支持 Slack/飞书/钉钉等任何接受 JSON 的 webhook
+- **多 prompt 轮换** — `prompts` 配置多个 prompt 轮换使用，避免 provider 缓存优化影响测量
+- **输出校验** — `expect_pattern` 正则校验响应内容，检测模型是否返回预期内容
+- **Azure OpenAI 支持** — `api_format: azure`，使用 `api-key` 认证和 Azure 特有的 URL 结构
+- **非流式探测** — `stream: false` 配置，支持不需要流式的场景（OpenAI/Azure 格式）
+- **版本信息注入** — 通过 ldflags 注入 git commit/version/build time，`--version` 和 `/version` 端点
+- **配置校验** — `--validate` 参数，校验配置文件后退出，便于 CI/CD 集成
+- **启动 jitter** — 随机延迟 0~30s 分散初始探测，避免同时大量请求
+
+### 未来扩展方向
+
+- **Grafana 面板增强** — 添加 `llm_probe_last_success_timestamp_seconds` 相关面板
+- **多区域对比** — 通过 Prometheus `external_labels` 区分部署区域，面板级横向对比
+- **Light probe 与 prompt rotation 联动** — light 模式下也支持 prompt 轮换
+- **自定义 webhook payload 模板** — 支持用户自定义告警消息格式

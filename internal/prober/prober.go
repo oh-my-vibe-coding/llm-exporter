@@ -21,13 +21,20 @@ type ProbeResult struct {
 	InputTokens     int
 	OutputTokens    int
 	TotalTokens     int
+	ResponseText    string
 	ErrorType       string
 	Error           error
 }
 
+// ProbeParams holds per-probe parameters that may vary between light and full probes.
+type ProbeParams struct {
+	Prompt    string
+	MaxTokens int
+}
+
 // Prober executes a streaming probe against an LLM endpoint.
 type Prober interface {
-	Probe(ctx context.Context) (*ProbeResult, error)
+	Probe(ctx context.Context, params ProbeParams) (*ProbeResult, error)
 }
 
 // New creates a Prober for the given target configuration.
@@ -39,6 +46,8 @@ func New(t config.Target) (Prober, error) {
 		return NewAnthropic(t), nil
 	case "google":
 		return NewGoogle(t), nil
+	case "azure":
+		return NewAzure(t), nil
 	default:
 		return nil, fmt.Errorf("unsupported api_format: %s", t.APIFormat)
 	}
@@ -107,7 +116,7 @@ func newConnectTrace(ctx context.Context) (context.Context, *connectTimings) {
 	return httptrace.WithClientTrace(ctx, trace), t
 }
 
-func (t *connectTimings) duration(start time.Time) time.Duration {
+func (t *connectTimings) duration() time.Duration {
 	if t.reused {
 		return 0
 	}

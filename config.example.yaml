@@ -1,5 +1,10 @@
 listen_addr: ":9101"
 
+# Webhook alerting: send a POST request when a target fails consecutively.
+# webhook:
+#   url: "https://hooks.slack.com/services/xxx/yyy/zzz"
+#   consecutive_failures: 3   # alert after N consecutive failures (default: 3)
+
 targets:
   # OpenAI GPT-4o
   - name: openai-gpt4o
@@ -8,7 +13,23 @@ targets:
     model: "gpt-4o"
     api_format: openai
     timeout: 30s
-    interval: 60s
+    interval: 300s
+    # Light probe mode: 9 out of 10 probes use minimal tokens to reduce cost.
+    # full_probe_every: 10
+    # light_prompt: "Hi"
+    # light_max_tokens: 5
+    #
+    # Prompt rotation: cycle through multiple prompts to avoid caching.
+    # prompts:
+    #   - "Hi"
+    #   - "Hello"
+    #   - "Hey there"
+    #
+    # Response validation: fail probe if response doesn't match pattern.
+    # expect_pattern: "\\d+"
+    #
+    # Non-streaming mode (default: true). Set to false for simpler APIs.
+    # stream: false
 
   # Anthropic Claude
   - name: anthropic-claude
@@ -17,7 +38,7 @@ targets:
     model: "claude-sonnet-4-20250514"
     api_format: anthropic
     timeout: 30s
-    interval: 60s
+    interval: 300s
 
   # Google Gemini
   - name: google-gemini
@@ -26,7 +47,44 @@ targets:
     model: "gemini-2.0-flash"
     api_format: google
     timeout: 30s
-    interval: 60s
+    interval: 300s
+
+  # Azure OpenAI
+  - name: azure-gpt4o
+    endpoint: "${AZURE_OPENAI_ENDPOINT}"
+    api_key: "${AZURE_OPENAI_API_KEY}"
+    model: "gpt-4o"
+    api_format: azure
+    # api_version: "2024-10-21"   # 默认值
+    timeout: 30s
+    interval: 300s
+
+  # OpenRouter (OpenAI 兼容接口)
+  - name: openrouter-claude
+    endpoint: "https://openrouter.ai/api"
+    api_key: "${OPENROUTER_API_KEY}"
+    model: "anthropic/claude-sonnet-4"
+    api_format: openai
+    timeout: 30s
+    interval: 300s
+
+  # DeepSeek (OpenAI 兼容接口)
+  - name: deepseek-chat
+    endpoint: "https://api.deepseek.com"
+    api_key: "${DEEPSEEK_API_KEY}"
+    model: "deepseek-chat"
+    api_format: openai
+    timeout: 30s
+    interval: 300s
+
+  # Mistral (OpenAI 兼容接口)
+  - name: mistral-large
+    endpoint: "https://api.mistral.ai"
+    api_key: "${MISTRAL_API_KEY}"
+    model: "mistral-large-latest"
+    api_format: openai
+    timeout: 30s
+    interval: 300s
 
   # 阿里百炼 (DashScope - OpenAI 兼容接口)
   - name: dashscope-qwen
@@ -35,7 +93,7 @@ targets:
     model: "qwen-plus"
     api_format: openai
     timeout: 30s
-    interval: 60s
+    interval: 300s
 
   # 字节方舟 (Ark - OpenAI 兼容接口)
   - name: ark-pro
@@ -44,7 +102,7 @@ targets:
     model: "${ARK_ENDPOINT_ID}"
     api_format: openai
     timeout: 30s
-    interval: 60s
+    interval: 300s
 
   # 自定义代理 API (OpenAI 兼容)
   # 支持 chat_path 自定义路径，extra_headers 自定义请求头
@@ -57,11 +115,12 @@ targets:
     extra_headers:
       X-Custom-Auth: "${PROXY_TOKEN}"
     timeout: 30s
-    interval: 60s
+    interval: 300s
 
-  # Local Ollama (OpenAI-compatible)
+  # Local Ollama (OpenAI-compatible, non-streaming)
   # - name: local-ollama
   #   endpoint: "http://localhost:11434"
   #   model: "llama3"
   #   api_format: openai
+  #   stream: false
   #   interval: 30s

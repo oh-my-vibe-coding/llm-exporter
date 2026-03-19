@@ -7,12 +7,17 @@ Prometheus Exporter，用于监控大语言模型 API 的可用性和性能。�
 ## 功能特性
 
 - **流式 TTFT 测量** — 所有 API 均使用 streaming 请求，精确测量首 Token 到达时间
-- **多 API 格式支持** — OpenAI / Anthropic / Google Gemini，以及所有 OpenAI 兼容的服务
-- **国内模型支持** — 阿里百炼（DashScope）、字节方舟（Ark）、自定义代理 API
+- **多 API 格式支持** — OpenAI / Anthropic / Google Gemini / Azure OpenAI，以及所有 OpenAI 兼容的服务
+- **国内外厂商** — 阿里百炼、字节方舟、DeepSeek、Mistral、OpenRouter 等开箱可用
 - **轻量少依赖** — 仅依赖 `prometheus/client_golang`、`gopkg.in/yaml.v3` 和 `fsnotify/fsnotify`，不引入任何 LLM SDK
 - **单二进制部署** — Go 编译，支持二进制 / Docker / Kubernetes 部署
 - **灵活配置** — YAML 配置，支持 `${ENV_VAR}` 环境变量展开、自定义请求头和 API 路径
 - **配置热重载** — 支持 SIGHUP 信号、HTTP `/-/reload` 接口、`--watch-config` 文件监听三种方式
+- **Webhook 告警** — 连续探测失败后自动发送 webhook 通知（Slack/飞书/钉钉等）
+- **Prompt 轮换** — 配置多个 prompt 轮流使用，避免 provider 缓存
+- **响应验证** — 正则匹配模型输出内容，确认模型真正在正常工作
+- **非流式探测** — 支持 `stream: false` 模式，兼容不支持流式的 API
+- **运维友好** — `--validate` 配置校验、`--version` 版本信息、`/api/v1/targets` 状态 API
 
 ## 快速开始
 
@@ -357,19 +362,28 @@ llm-exporter --config /etc/llm-exporter/config.yaml --watch-config
 ```yaml
 listen_addr: ":9101"      # 监听地址，默认 :9101
 
+# Webhook 告警（可选）：连续探测失败后发送 POST 请求
+# webhook:
+#   url: "https://hooks.slack.com/services/xxx"
+#   consecutive_failures: 3  # 默认 3 次
+
 targets:
   - name: openai-gpt4o    # 目标名称（必填，用作 provider label）
     endpoint: "https://api.openai.com"   # API 端点（必填）
     api_key: "${OPENAI_API_KEY}"         # API Key，支持环境变量
     model: "gpt-4o"                      # 模型名称（必填）
-    prompt: "Count from 1 to 20, one number per line."  # 探测 prompt（可选）
-    api_format: openai                   # API 格式：openai / anthropic / google
+    prompt: "Hi"                         # 探测 prompt，默认 "Hi"
+    api_format: openai                   # API 格式：openai / anthropic / google / azure
     timeout: 30s                         # 单次探测超时，默认 30s
-    interval: 60s                        # 探测间隔，默认 60s
-    max_tokens: 100                      # 最大生成 token 数，默认 100
+    interval: 300s                       # 探测间隔，默认 300s
+    max_tokens: 20                       # 最大生成 token 数，默认 20
     chat_path: "/v1/chat/completions"    # 自定义 API 路径（仅 openai 格式）
-    extra_headers:                       # 自定义请求头（仅 openai 格式）
+    extra_headers:                       # 自定义请求头
       X-Custom-Auth: "token"
+    # stream: false                      # 非流式模式（默认 true）
+    # api_version: "2024-10-21"          # Azure API 版本（仅 azure 格式）
+    # prompts: ["Hi", "Hello", "Hey"]    # Prompt 轮换（与 prompt 二选一）
+    # expect_pattern: "\\d+"             # 响应内容验证（正则表达式）
 ```
 
 ### 各平台配置示例
@@ -453,6 +467,47 @@ targets:
   interval: 30s
 ```
 
+#### Azure OpenAI
+
+```yaml
+- name: azure-gpt4o
+  endpoint: "${AZURE_OPENAI_ENDPOINT}"
+  api_key: "${AZURE_OPENAI_API_KEY}"
+  model: "gpt-4o"
+  api_format: azure
+  # api_version: "2024-10-21"  # 默认值
+```
+
+#### OpenRouter
+
+```yaml
+- name: openrouter-claude
+  endpoint: "https://openrouter.ai/api"
+  api_key: "${OPENROUTER_API_KEY}"
+  model: "anthropic/claude-sonnet-4"
+  api_format: openai
+```
+
+#### DeepSeek
+
+```yaml
+- name: deepseek-chat
+  endpoint: "https://api.deepseek.com"
+  api_key: "${DEEPSEEK_API_KEY}"
+  model: "deepseek-chat"
+  api_format: openai
+```
+
+#### Mistral
+
+```yaml
+- name: mistral-large
+  endpoint: "https://api.mistral.ai"
+  api_key: "${MISTRAL_API_KEY}"
+  model: "mistral-large-latest"
+  api_format: openai
+```
+
 ### 环境变量展开
 
 配置文件中所有 `${VAR_NAME}` 格式的值会在加载时自动替换为对应的环境变量值。如果环境变量不存在，则保留原始字符串。
@@ -469,6 +524,7 @@ targets:
 | `llm_probe_output_tokens` | Gauge | 本次探测的输出 token 数 |
 | `llm_probe_total_tokens` | Gauge | 本次探测消耗的 token 总数 |
 | `llm_probe_token_rate` | Gauge | Token 生成速率（output_tokens / generation_time, tok/s） |
+| `llm_probe_last_success_timestamp_seconds` | Gauge | 最后一次探测成功的 Unix 时间戳 |
 | `llm_probe_errors_total` | Counter | 累计错误次数，按 `error_type` 分类 |
 
 ### Labels
@@ -480,18 +536,20 @@ targets:
 | `provider` | 目标名称（对应配置中的 `name`） |
 | `model` | 模型名称 |
 | `endpoint` | API 端点地址 |
-| `api_format` | API 格式（openai / anthropic / google） |
+| `api_format` | API 格式（openai / anthropic / google / azure） |
 
 `llm_probe_errors_total` 额外携带 `error_type` 标签：
 
 | error_type | 说明 |
 |------------|------|
 | `timeout` | 请求超时 |
+| `canceled` | 请求被取消（热重载或关闭期间） |
 | `auth` | 认证失败（HTTP 401/403） |
 | `rate_limit` | 限流（HTTP 429） |
 | `network` | 网络错误（DNS 解析失败、连接拒绝等） |
 | `api_error` | API 返回其他错误状态码 |
 | `parse_error` | 响应解析失败或流中无内容 |
+| `validation_error` | 响应内容未匹配 `expect_pattern` 正则 |
 
 ### Histogram Buckets
 
@@ -716,10 +774,12 @@ llm-exporter/
 │   │   ├── prober.go                # Prober 接口 + 工厂函数 + 连接追踪
 │   │   ├── sse.go                   # SSE 事件流解析器
 │   │   ├── errors.go                # 错误分类（timeout/auth/rate_limit/...）
-│   │   ├── openai.go                # OpenAI 兼容流式探测（含百炼/方舟/代理）
+│   │   ├── openai.go                # OpenAI 兼容探测（流式/非流式）
 │   │   ├── anthropic.go             # Anthropic 流式探测
-│   │   └── google.go                # Google Gemini 流式探测
-│   └── scheduler/scheduler.go       # 每目标独立 goroutine 调度 + 热重载
+│   │   ├── google.go                # Google Gemini 流式探测
+│   │   └── azure.go                 # Azure OpenAI 探测（流式/非流式）
+│   ├── scheduler/scheduler.go       # 调度 + 热重载 + 告警 + 响应验证
+│   └── version/version.go           # 版本信息（通过 ldflags 注入）
 ├── grafana/
 │   ├── provisioning/
 │   │   ├── dashboards/dashboards.yml
@@ -744,6 +804,7 @@ llm-exporter/
 | OpenAI | `POST /v1/chat/completions` + `stream: true` | 首个 SSE 事件中 `choices[0].delta.content` 非空 |
 | Anthropic | `POST /v1/messages` + `stream: true` | 首个 `content_block_delta` 事件的 `text_delta` 非空 |
 | Google | `POST /v1beta/models/{model}:streamGenerateContent?alt=sse` | 首个含文本内容的 `candidate` |
+| Azure | `POST /openai/deployments/{model}/chat/completions` + `stream: true` | 同 OpenAI 格式 |
 
 ## 探测方法论
 
@@ -753,15 +814,21 @@ llm-exporter/
 |------|------|
 | **禁用连接复用** | 每次探测创建新的 TCP 连接（`DisableKeepAlives`），真实反映 DNS + TCP + TLS 耗时 |
 | **Prompt 随机化** | 自动在 prompt 末尾追加时间戳 `[t=<unix_millis>]`，防止代理/CDN 缓存导致测量失真 |
-| **充足的输出量** | 默认 prompt 要求生成约 20 行内容（`max_tokens=100`），确保有足够 token 进行速率计算 |
+| **可配置输出量** | 默认 `max_tokens=20`，可按需调大以获得更准确的 token rate 数据 |
 | **Token Rate 阈值保护** | 仅在输出 ≥5 tokens 且生成时间 ≥100ms 时才计算 token rate，避免除以极小数产生异常值 |
 | **三阶段时间分解** | Connect（DNS+TCP+TLS）→ Wait（TTFT - Connect）→ Generation（Duration - TTFT） |
 
 ## 构建
 
 ```bash
-# 本地构建
+# 本地构建（自动注入版本信息）
 make build
+
+# 查看版本
+./llm-exporter --version
+
+# 校验配置
+./llm-exporter --validate --config config.yaml
 
 # Docker 镜像
 make docker
@@ -772,6 +839,25 @@ make test
 # 清理
 make clean
 ```
+
+## HTTP 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/metrics` | GET | Prometheus 指标 |
+| `/healthz` | GET | 健康检查，返回 "ok" |
+| `/-/reload` | POST | 触发配置热重载 |
+| `/api/v1/targets` | GET | 返回所有探测目标的当前状态（JSON） |
+| `/version` | GET | 返回版本信息（JSON） |
+
+## CLI 参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--config` | `config.yaml` | 配置文件路径 |
+| `--watch-config` | `false` | 监听配置文件变化并自动重载 |
+| `--validate` | `false` | 校验配置文件是否合法，然后退出 |
+| `--version` | `false` | 打印版本信息并退出 |
 
 ## License
 

@@ -25,19 +25,19 @@ func NewGoogle(t config.Target) Prober {
 	}
 }
 
-func (p *googleProber) Probe(ctx context.Context) (*ProbeResult, error) {
+func (p *googleProber) Probe(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
 	result := &ProbeResult{}
 
 	body := map[string]any{
 		"contents": []map[string]any{
 			{
 				"parts": []map[string]string{
-					{"text": probePrompt(p.target.Prompt)},
+					{"text": probePrompt(params.Prompt)},
 				},
 			},
 		},
 		"generationConfig": map[string]any{
-			"maxOutputTokens": p.target.MaxTokens,
+			"maxOutputTokens": params.MaxTokens,
 		},
 	}
 
@@ -63,19 +63,22 @@ func (p *googleProber) Probe(ctx context.Context) (*ProbeResult, error) {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	for k, v := range p.target.ExtraHeaders {
+		req.Header.Set(k, v)
+	}
 
 	start := time.Now()
 	resp, err := p.client.Do(req)
 	if err != nil {
 		result.Duration = time.Since(start)
-		result.ConnectDuration = timings.duration(start)
+		result.ConnectDuration = timings.duration()
 		result.ErrorType = classifyNetworkError(err)
 		result.Error = err
 		return result, err
 	}
 	defer resp.Body.Close()
 
-	result.ConnectDuration = timings.duration(start)
+	result.ConnectDuration = timings.duration()
 
 	if resp.StatusCode != http.StatusOK {
 		result.Duration = time.Since(start)
@@ -87,6 +90,7 @@ func (p *googleProber) Probe(ctx context.Context) (*ProbeResult, error) {
 
 	reader := NewSSEReader(resp.Body)
 	var ttftRecorded bool
+	var textBuf strings.Builder
 
 	for {
 		event, err := reader.Next()
@@ -109,6 +113,7 @@ func (p *googleProber) Probe(ctx context.Context) (*ProbeResult, error) {
 			for _, c := range chunk.Candidates {
 				for _, p := range c.Content.Parts {
 					if p.Text != "" {
+						textBuf.WriteString(p.Text)
 						result.TTFT = time.Since(start)
 						ttftRecorded = true
 						break
@@ -116,6 +121,12 @@ func (p *googleProber) Probe(ctx context.Context) (*ProbeResult, error) {
 				}
 				if ttftRecorded {
 					break
+				}
+			}
+		} else {
+			for _, c := range chunk.Candidates {
+				for _, p := range c.Content.Parts {
+					textBuf.WriteString(p.Text)
 				}
 			}
 		}
@@ -128,6 +139,7 @@ func (p *googleProber) Probe(ctx context.Context) (*ProbeResult, error) {
 	}
 
 	result.Duration = time.Since(start)
+	result.ResponseText = textBuf.String()
 	result.Success = ttftRecorded
 	if !ttftRecorded {
 		result.ErrorType = "parse_error"

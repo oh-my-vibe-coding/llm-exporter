@@ -13,26 +13,45 @@ import (
 	"github.com/taosun/llm-exporter/internal/config"
 )
 
-type openaiProber struct {
+type azureProber struct {
 	target config.Target
 	client *http.Client
 }
 
-func NewOpenAI(t config.Target) Prober {
-	return &openaiProber{
+func NewAzure(t config.Target) Prober {
+	return &azureProber{
 		target: t,
 		client: newProbeClient(t.Timeout),
 	}
 }
 
-func (p *openaiProber) Probe(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
+func (p *azureProber) Probe(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
 	if !p.target.IsStreaming() {
 		return p.probeNonStreaming(ctx, params)
 	}
 	return p.probeStreaming(ctx, params)
 }
 
-func (p *openaiProber) probeStreaming(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
+func (p *azureProber) buildURL() string {
+	apiVersion := p.target.APIVersion
+	if apiVersion == "" {
+		apiVersion = "2024-10-21"
+	}
+	return fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s",
+		strings.TrimRight(p.target.Endpoint, "/"), p.target.Model, apiVersion)
+}
+
+func (p *azureProber) setHeaders(req *http.Request) {
+	req.Header.Set("Content-Type", "application/json")
+	if p.target.APIKey != "" {
+		req.Header.Set("api-key", p.target.APIKey)
+	}
+	for k, v := range p.target.ExtraHeaders {
+		req.Header.Set(k, v)
+	}
+}
+
+func (p *azureProber) probeStreaming(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
 	result := &ProbeResult{}
 
 	body := map[string]any{
@@ -54,27 +73,14 @@ func (p *openaiProber) probeStreaming(ctx context.Context, params ProbeParams) (
 		return result, err
 	}
 
-	chatPath := p.target.ChatPath
-	if chatPath == "" {
-		chatPath = "/v1/chat/completions"
-	}
-	url := strings.TrimRight(p.target.Endpoint, "/") + chatPath
-
 	traceCtx, timings := newConnectTrace(ctx)
-	req, err := http.NewRequestWithContext(traceCtx, http.MethodPost, url, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(traceCtx, http.MethodPost, p.buildURL(), bytes.NewReader(payload))
 	if err != nil {
 		result.ErrorType = "network"
 		result.Error = err
 		return result, err
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-	if p.target.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+p.target.APIKey)
-	}
-	for k, v := range p.target.ExtraHeaders {
-		req.Header.Set(k, v)
-	}
+	p.setHeaders(req)
 
 	start := time.Now()
 	resp, err := p.client.Do(req)
@@ -148,7 +154,7 @@ func (p *openaiProber) probeStreaming(ctx context.Context, params ProbeParams) (
 	return result, result.Error
 }
 
-func (p *openaiProber) probeNonStreaming(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
+func (p *azureProber) probeNonStreaming(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
 	result := &ProbeResult{}
 
 	body := map[string]any{
@@ -166,27 +172,14 @@ func (p *openaiProber) probeNonStreaming(ctx context.Context, params ProbeParams
 		return result, err
 	}
 
-	chatPath := p.target.ChatPath
-	if chatPath == "" {
-		chatPath = "/v1/chat/completions"
-	}
-	url := strings.TrimRight(p.target.Endpoint, "/") + chatPath
-
 	traceCtx, timings := newConnectTrace(ctx)
-	req, err := http.NewRequestWithContext(traceCtx, http.MethodPost, url, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(traceCtx, http.MethodPost, p.buildURL(), bytes.NewReader(payload))
 	if err != nil {
 		result.ErrorType = "network"
 		result.Error = err
 		return result, err
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-	if p.target.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+p.target.APIKey)
-	}
-	for k, v := range p.target.ExtraHeaders {
-		req.Header.Set(k, v)
-	}
+	p.setHeaders(req)
 
 	start := time.Now()
 	resp, err := p.client.Do(req)
@@ -242,30 +235,4 @@ func (p *openaiProber) probeNonStreaming(ctx context.Context, params ProbeParams
 		result.Error = fmt.Errorf("no content in response")
 	}
 	return result, result.Error
-}
-
-type openaiChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content string `json:"content"`
-		} `json:"delta"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
-}
-
-type openaiResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
 }

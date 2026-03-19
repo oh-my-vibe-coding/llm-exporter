@@ -25,7 +25,7 @@ func classifyNetworkError(err error) string {
 		return "timeout"
 	}
 	if ctx := context.Canceled; err == ctx {
-		return "timeout"
+		return "canceled"
 	}
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 		return "timeout"
@@ -34,7 +34,7 @@ func classifyNetworkError(err error) string {
 		return "timeout"
 	}
 	if strings.Contains(err.Error(), "context canceled") {
-		return "timeout"
+		return "canceled"
 	}
 	return "network"
 }

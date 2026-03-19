@@ -50,6 +50,11 @@ var (
 		Help: "Output token generation rate (tokens/second).",
 	}, labels)
 
+	ProbeLastSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_probe_last_success_timestamp_seconds",
+		Help: "Unix timestamp of the last successful probe.",
+	}, labels)
+
 	ProbeErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "llm_probe_errors_total",
 		Help: "Total number of probe errors by type.",
@@ -66,6 +71,24 @@ func Register(reg prometheus.Registerer) {
 		ProbeOutputTokens,
 		ProbeTotalTokens,
 		ProbeTokenRate,
+		ProbeLastSuccess,
 		ProbeErrors,
 	)
+}
+
+// Reset clears all metric label combinations. Called during hot reload
+// to remove stale targets.
+func Reset() {
+	ProbeSuccess.Reset()
+	ProbeDuration.Reset()
+	ProbeConnectDuration.Reset()
+	ProbeTTFT.Reset()
+	ProbeInputTokens.Reset()
+	ProbeOutputTokens.Reset()
+	ProbeTotalTokens.Reset()
+	ProbeTokenRate.Reset()
+	ProbeLastSuccess.Reset()
+	// Note: ProbeErrors (Counter) is also reset. Prometheus handles counter
+	// resets gracefully. This only happens on config reload, which is infrequent.
+	ProbeErrors.Reset()
 }
