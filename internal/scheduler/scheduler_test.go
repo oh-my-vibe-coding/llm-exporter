@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/taosun/llm-exporter/internal/config"
-	"github.com/taosun/llm-exporter/internal/prober"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/config"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/prober"
 )
 
 func TestBuildParams_Default(t *testing.T) {

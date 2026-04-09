@@ -35,7 +35,7 @@
       "targetBlank": true,
       "title": "Design Doc",
       "type": "link",
-      "url": "https://github.com/taosun/llm-exporter/blob/main/DESIGN.md"
+      "url": "https://github.com/oh-my-vibe-coding/llm-exporter/blob/main/DESIGN.md"
     },
     {
       "asDropdown": false,
@@ -46,7 +46,7 @@
       "targetBlank": true,
       "title": "README",
       "type": "link",
-      "url": "https://github.com/taosun/llm-exporter/blob/main/README.md"
+      "url": "https://github.com/oh-my-vibe-coding/llm-exporter/blob/main/README.md"
     }
   ],
   "panels": [

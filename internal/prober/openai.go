@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/taosun/llm-exporter/internal/config"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/config"
 )
 
 func NewOpenAI(t config.Target) Prober {

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/taosun/llm-exporter/internal/config"
-	"github.com/taosun/llm-exporter/internal/status"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/config"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/status"
 )
 
 func TestAlerter_NilSafe(t *testing.T) {

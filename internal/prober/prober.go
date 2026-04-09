@@ -9,7 +9,7 @@ import (
 	"net/http/httptrace"
 	"time"
 
-	"github.com/taosun/llm-exporter/internal/config"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/config"
 )
 
 // ProbeResult holds the outcome of a single probe.

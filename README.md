@@ -97,7 +97,7 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin llm-exporter
 sudo cat > /etc/systemd/system/llm-exporter.service << 'EOF'
 [Unit]
 Description=LLM Exporter - Prometheus LLM API Probe Exporter
-Documentation=https://github.com/taosun/llm-exporter
+Documentation=https://github.com/oh-my-vibe-coding/llm-exporter
 After=network-online.target
 Wants=network-online.target
 

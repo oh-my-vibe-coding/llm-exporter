@@ -1,4 +1,22 @@
-llm-exporter
+# Binary
+/llm-exporter
 *.exe
-.env
+
+# Config with secrets
 config.yaml
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go
+vendor/

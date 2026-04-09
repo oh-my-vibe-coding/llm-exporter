@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/taosun/llm-exporter/internal/config"
-	"github.com/taosun/llm-exporter/internal/status"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/config"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/status"
 )
 
 // Alerter checks consecutive failures and sends webhook alerts.

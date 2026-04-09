@@ -12,9 +12,9 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build \
     -ldflags="-s -w \
-        -X 'github.com/taosun/llm-exporter/internal/version.Version=$(VERSION)' \
-        -X 'github.com/taosun/llm-exporter/internal/version.GitCommit=$(GIT_COMMIT)' \
-        -X 'github.com/taosun/llm-exporter/internal/version.BuildTime=$(BUILD_TIME)'" \
+        -X 'github.com/oh-my-vibe-coding/llm-exporter/internal/version.Version=$(VERSION)' \
+        -X 'github.com/oh-my-vibe-coding/llm-exporter/internal/version.GitCommit=$(GIT_COMMIT)' \
+        -X 'github.com/oh-my-vibe-coding/llm-exporter/internal/version.BuildTime=$(BUILD_TIME)'" \
     -o /llm-exporter ./cmd/llm-exporter
 
 # Runtime stage

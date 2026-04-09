@@ -1,4 +1,4 @@
-module github.com/taosun/llm-exporter
+module github.com/oh-my-vibe-coding/llm-exporter
 
 go 1.22
 

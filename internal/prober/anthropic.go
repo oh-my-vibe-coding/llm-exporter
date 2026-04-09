@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/taosun/llm-exporter/internal/config"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/config"
 )
 
 type anthropicProber struct {

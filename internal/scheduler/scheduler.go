@@ -11,11 +11,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/taosun/llm-exporter/internal/alerter"
-	"github.com/taosun/llm-exporter/internal/config"
-	"github.com/taosun/llm-exporter/internal/metrics"
-	"github.com/taosun/llm-exporter/internal/prober"
-	"github.com/taosun/llm-exporter/internal/status"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/alerter"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/config"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/metrics"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/prober"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/status"
 )
 
 type targetRunner struct {
