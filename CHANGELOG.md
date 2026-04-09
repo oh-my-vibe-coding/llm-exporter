@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.2] - 2026-04-09
+
+### Other
+
+- Migrate Go module path to github.com/oh-my-vibe-coding/llm-exporter
+- Add MIT LICENSE file and enhance .gitignore
+- Add GoReleaser config and GitHub Actions workflows (CI + Release)
+
 ## [2.0.1] - 2026-04-09
 
 ### Changed
