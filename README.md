@@ -16,6 +16,7 @@ Prometheus Exporter，用于监控大语言模型 API 的可用性和性能。�
 - **Webhook 告警** — 连续探测失败后自动发送 webhook 通知（Slack/飞书/钉钉等）
 - **Prompt 轮换** — 配置多个 prompt 轮流使用，避免 provider 缓存
 - **响应验证** — 正则匹配模型输出内容，确认模型真正在正常工作
+- **自适应探测间隔** — 服务稳定时自动降低探测频率节省 token，故障时立即恢复高频探测
 - **非流式探测** — 支持 `stream: false` 模式，兼容不支持流式的 API
 - **运维友好** — `--validate` 配置校验、`--version` 版本信息、`/api/v1/targets` 状态 API
 
@@ -384,6 +385,9 @@ targets:
     # api_version: "2024-10-21"          # Azure API 版本（仅 azure 格式）
     # prompts: ["Hi", "Hello", "Hey"]    # Prompt 轮换（与 prompt 二选一）
     # expect_pattern: "\\d+"             # 响应内容验证（正则表达式）
+    # adaptive_interval: true            # 自适应间隔（默认关闭）
+    # max_interval: 1200s                # 自适应上限，默认 4x interval
+    # backoff_after: 5                   # 连续成功 N 次后开始 backoff，默认 5
 ```
 
 ### 各平台配置示例
@@ -817,6 +821,33 @@ llm-exporter/
 | **可配置输出量** | 默认 `max_tokens=20`，可按需调大以获得更准确的 token rate 数据 |
 | **Token Rate 阈值保护** | 仅在输出 ≥5 tokens 且生成时间 ≥100ms 时才计算 token rate，避免除以极小数产生异常值 |
 | **三阶段时间分解** | Connect（DNS+TCP+TLS）→ Wait（TTFT - Connect）→ Generation（Duration - TTFT） |
+
+## 自适应探测间隔
+
+启用 `adaptive_interval: true` 后，探测间隔会根据目标的健康状态动态调整：
+
+- **稳定期**：连续成功 `backoff_after` 次（默认 5）后，每次成功间隔翻倍（如 5m → 10m → 20m），封顶于 `max_interval`（默认 4 倍基础间隔）
+- **故障时**：任何一次探测失败立即重置到基础间隔，确保故障检测不受影响
+
+```yaml
+# 示例配置
+- name: openai-gpt4o
+  endpoint: "https://api.openai.com"
+  api_key: "${OPENAI_API_KEY}"
+  model: "gpt-4o"
+  interval: 300s
+  adaptive_interval: true     # 默认 false
+  max_interval: 1200s         # 默认 4x interval
+  backoff_after: 5            # 默认 5
+```
+
+**对准确性的影响**：每个探测数据点本身完全准确（延迟、TTFT、token rate 不受影响），唯一代价是稳定期采样密度降低。间隔变化时会输出日志：
+
+```
+[openai-gpt4o] adaptive interval: 5m0s -> 10m0s (consec_success=6)
+```
+
+与 light probe 模式组合使用可实现最大节省。例如 `interval=300s` + `adaptive_interval=true` + `full_probe_every=10`，稳定期 token 消耗可降低 80% 以上。
 
 ## 构建
 

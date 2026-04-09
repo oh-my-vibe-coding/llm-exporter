@@ -43,6 +43,12 @@ type Target struct {
 	FullProbeEvery int    `yaml:"full_probe_every"`
 	LightPrompt    string `yaml:"light_prompt"`
 	LightMaxTokens int    `yaml:"light_max_tokens"`
+
+	// Adaptive interval: when enabled, the probe interval increases after
+	// consecutive successes and resets to the base interval on failure.
+	AdaptiveInterval bool          `yaml:"adaptive_interval"`
+	MaxInterval      time.Duration `yaml:"max_interval"`
+	BackoffAfter     int           `yaml:"backoff_after"`
 }
 
 // IsStreaming returns whether the target uses streaming mode. Defaults to true.
@@ -63,6 +69,10 @@ func expandEnv(s string) string {
 		}
 		return match
 	})
+}
+
+var validAPIFormats = map[string]bool{
+	"openai": true, "azure": true, "anthropic": true, "google": true,
 }
 
 func Load(path string) (*Config, error) {
@@ -91,8 +101,36 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	if len(cfg.Targets) == 0 {
+		return nil, fmt.Errorf("no targets configured")
+	}
+
+	seenNames := make(map[string]int)
+
 	for i := range cfg.Targets {
 		t := &cfg.Targets[i]
+
+		// --- Required fields (fail fast) ---
+		if t.Name == "" {
+			return nil, fmt.Errorf("target at index %d: name is required", i)
+		}
+		if prev, ok := seenNames[t.Name]; ok {
+			return nil, fmt.Errorf("target %q at index %d: duplicate name (first at index %d)", t.Name, i, prev)
+		}
+		seenNames[t.Name] = i
+		if t.Endpoint == "" {
+			return nil, fmt.Errorf("target %q: endpoint is required", t.Name)
+		}
+		if t.Model == "" {
+			return nil, fmt.Errorf("target %q: model is required", t.Name)
+		}
+
+		// --- Mutual exclusivity ---
+		if t.Prompt != "" && len(t.Prompts) > 0 {
+			return nil, fmt.Errorf("target %q: cannot set both prompt and prompts", t.Name)
+		}
+
+		// --- Defaults ---
 		if t.Prompt == "" && len(t.Prompts) == 0 {
 			t.Prompt = "Hi"
 		}
@@ -105,6 +143,30 @@ func Load(path string) (*Config, error) {
 		if t.MaxTokens == 0 {
 			t.MaxTokens = 20
 		}
+		if t.APIFormat == "" {
+			t.APIFormat = "openai"
+		}
+		if t.APIFormat == "azure" && t.APIVersion == "" {
+			t.APIVersion = "2024-10-21"
+		}
+
+		// --- Enum validation ---
+		if !validAPIFormats[t.APIFormat] {
+			return nil, fmt.Errorf("target %q: unsupported api_format %q (must be one of: openai, azure, anthropic, google)", t.Name, t.APIFormat)
+		}
+
+		// --- Numeric constraints ---
+		if t.Timeout < 0 {
+			return nil, fmt.Errorf("target %q: timeout must not be negative", t.Name)
+		}
+		if t.Interval < 0 {
+			return nil, fmt.Errorf("target %q: interval must not be negative", t.Name)
+		}
+
+		// --- Light probe mode ---
+		if t.FullProbeEvery == 1 {
+			return nil, fmt.Errorf("target %q: full_probe_every must be >= 2 (1 makes light mode pointless)", t.Name)
+		}
 		if t.FullProbeEvery > 0 {
 			if t.LightPrompt == "" {
 				t.LightPrompt = "Hi"
@@ -113,25 +175,31 @@ func Load(path string) (*Config, error) {
 				t.LightMaxTokens = 5
 			}
 		}
-		if t.APIFormat == "" {
-			t.APIFormat = "openai"
+		if t.FullProbeEvery == 0 && (t.LightPrompt != "" || t.LightMaxTokens != 0) {
+			return nil, fmt.Errorf("target %q: light_prompt/light_max_tokens have no effect without full_probe_every > 0", t.Name)
 		}
-		if t.APIFormat == "azure" && t.APIVersion == "" {
-			t.APIVersion = "2024-10-21"
+
+		// --- Adaptive interval ---
+		if t.AdaptiveInterval {
+			if t.MaxInterval == 0 {
+				t.MaxInterval = t.Interval * 4
+			}
+			if t.BackoffAfter == 0 {
+				t.BackoffAfter = 5
+			}
+			if t.MaxInterval < t.Interval {
+				return nil, fmt.Errorf("target %q: max_interval must be >= interval", t.Name)
+			}
 		}
+		if !t.AdaptiveInterval && (t.MaxInterval != 0 || t.BackoffAfter != 0) {
+			return nil, fmt.Errorf("target %q: max_interval/backoff_after have no effect without adaptive_interval: true", t.Name)
+		}
+
+		// --- Regex ---
 		if t.ExpectPattern != "" {
 			if _, err := regexp.Compile(t.ExpectPattern); err != nil {
 				return nil, fmt.Errorf("target %q: invalid expect_pattern: %w", t.Name, err)
 			}
-		}
-		if t.Name == "" {
-			return nil, fmt.Errorf("target at index %d: name is required", i)
-		}
-		if t.Endpoint == "" {
-			return nil, fmt.Errorf("target %q: endpoint is required", t.Name)
-		}
-		if t.Model == "" {
-			return nil, fmt.Errorf("target %q: model is required", t.Name)
 		}
 	}
 

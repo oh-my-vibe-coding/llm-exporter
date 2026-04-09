@@ -272,7 +272,9 @@ func probePrompt(base string) string {
 
 ### 4.4 独立探测间隔
 
-每个 target 独立的 goroutine + `time.Ticker`，互不影响。某个 target 的超时或高延迟不会阻塞其他 target 的探测。
+每个 target 独立的 goroutine + `time.Timer`，互不影响。某个 target 的超时或高延迟不会阻塞其他 target 的探测。
+
+启用自适应间隔（`adaptive_interval: true`）后，探测间隔在服务稳定时自动翻倍增长（封顶于 `max_interval`），一旦检测到失败立即恢复到基础间隔，在不影响故障检测灵敏度的前提下减少 token 消耗。
 
 ## 5. 配置设计
 
@@ -303,6 +305,10 @@ targets:                      # 探测目标列表
     extra_headers:            # 额外 HTTP 头
       X-Custom: "value"
     expect_pattern: "\\d+"    # 响应内容验证（正则表达式）
+    # 自适应探测间隔
+    adaptive_interval: true   # 启用自适应间隔（默认 false）
+    max_interval: 1200s       # 间隔上限（默认 4x interval）
+    backoff_after: 5          # 连续成功 N 次后开始 backoff（默认 5）
 ```
 
 ### 5.2 环境变量展开
@@ -336,6 +342,9 @@ func expandEnv(s string) string {
 | `stream` | `true` | 流式模式，用于测量 TTFT |
 | `api_version` | `2024-10-21` | Azure OpenAI API 版本（仅 azure 格式） |
 | `webhook.consecutive_failures` | `3` | 连续失败告警阈值 |
+| `adaptive_interval` | `false` | 自适应间隔默认关闭，需要显式启用 |
+| `max_interval` | `interval * 4` | 自适应间隔的上限 |
+| `backoff_after` | `5` | 连续成功 N 次后开始 backoff |
 
 ### 5.4 命令行参数
 
@@ -434,19 +443,34 @@ func runTarget(ctx context.Context, target Target, prober Prober) {
     jitter := randomDuration(min(target.Interval, 30*time.Second))
     time.Sleep(jitter)
 
-    probe(ctx, target, prober)       // 首次探测
+    currentInterval := target.Interval
+    consecSuccess := 0
 
-    ticker := time.NewTicker(target.Interval)
+    success := probe(ctx, target, prober)       // 首次探测
+
+    // 自适应间隔：稳定时逐步翻倍，失败时立即恢复
+    if target.AdaptiveInterval {
+        currentInterval, consecSuccess = adaptiveNext(target, success, consecSuccess)
+    }
+
+    timer := time.NewTimer(currentInterval)
     for {
         select {
         case <-ctx.Done(): return
-        case <-ticker.C: probe(ctx, target, prober)
+        case <-timer.C:
+            success = probe(ctx, target, prober)
+            if target.AdaptiveInterval {
+                currentInterval, consecSuccess = adaptiveNext(target, success, consecSuccess)
+            }
+            timer.Reset(currentInterval)
         }
     }
 }
 ```
 
 每个 target 在独立的 goroutine 中运行，互不干扰。启动时带有随机 jitter（最多 30 秒），避免大量 target 同时发起首次探测。探测函数 `probe()` 内部使用 `context.WithTimeout` 限制单次探测时间。
+
+**自适应间隔**：启用 `adaptive_interval: true` 后，调度器使用 `time.Timer`（而非固定的 `time.Ticker`），根据探测结果动态调整下一次探测的间隔。连续成功 `backoff_after` 次后每次成功间隔翻倍，封顶于 `max_interval`；任何一次失败立即重置到基础间隔。未启用自适应时行为与固定 ticker 完全一致。
 
 ### 7.4 信号处理与优雅关闭
 
@@ -661,6 +685,7 @@ clamp_min(
 - **版本信息注入** — 通过 ldflags 注入 git commit/version/build time，`--version` 和 `/version` 端点
 - **配置校验** — `--validate` 参数，校验配置文件后退出，便于 CI/CD 集成
 - **启动 jitter** — 随机延迟 0~30s 分散初始探测，避免同时大量请求
+- **自适应探测间隔** — `adaptive_interval: true` 启用，服务稳定时自动拉长间隔（翻倍至 `max_interval`），故障时立即恢复基础间隔，可减少 50%+ 的 token 消耗
 
 ### 未来扩展方向
 

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestExpandEnv(t *testing.T) {
@@ -123,6 +124,51 @@ func TestLoad_Validation(t *testing.T) {
 			"webhook:\n  consecutive_failures: 3\ntargets: [{name: t, endpoint: 'https://x.com', model: m}]",
 			"webhook: url is required",
 		},
+		{
+			"empty targets",
+			"targets: []",
+			"no targets configured",
+		},
+		{
+			"duplicate target name",
+			"targets:\n  - {name: x, endpoint: 'https://a.com', model: m}\n  - {name: x, endpoint: 'https://b.com', model: m}",
+			"duplicate name",
+		},
+		{
+			"invalid api_format",
+			"targets: [{name: t, endpoint: 'https://x.com', model: m, api_format: deepseek}]",
+			"unsupported api_format",
+		},
+		{
+			"both prompt and prompts",
+			"targets: [{name: t, endpoint: 'https://x.com', model: m, prompt: hi, prompts: [a, b]}]",
+			"cannot set both prompt and prompts",
+		},
+		{
+			"negative timeout",
+			"targets: [{name: t, endpoint: 'https://x.com', model: m, timeout: -5s}]",
+			"must not be negative",
+		},
+		{
+			"negative interval",
+			"targets: [{name: t, endpoint: 'https://x.com', model: m, interval: -1s}]",
+			"must not be negative",
+		},
+		{
+			"full_probe_every=1",
+			"targets: [{name: t, endpoint: 'https://x.com', model: m, full_probe_every: 1}]",
+			"must be >= 2",
+		},
+		{
+			"orphaned light_prompt",
+			"targets: [{name: t, endpoint: 'https://x.com', model: m, light_prompt: Hi}]",
+			"no effect without full_probe_every",
+		},
+		{
+			"orphaned max_interval",
+			"targets: [{name: t, endpoint: 'https://x.com', model: m, max_interval: 600s}]",
+			"no effect without adaptive_interval",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -201,6 +247,53 @@ targets:
 	}
 	if cfg.Webhook.ConsecutiveFailures != 3 {
 		t.Errorf("ConsecutiveFailures = %d, want 3", cfg.Webhook.ConsecutiveFailures)
+	}
+}
+
+func TestLoad_AdaptiveIntervalDefaults(t *testing.T) {
+	content := `
+targets:
+  - name: test
+    endpoint: "https://example.com"
+    model: "gpt-4o"
+    adaptive_interval: true
+`
+	path := writeTemp(t, content)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	tgt := cfg.Targets[0]
+	if !tgt.AdaptiveInterval {
+		t.Error("AdaptiveInterval = false, want true")
+	}
+	// Default max_interval = 4 * interval = 4 * 300s = 1200s
+	if tgt.MaxInterval != 1200*time.Second {
+		t.Errorf("MaxInterval = %v, want 1200s", tgt.MaxInterval)
+	}
+	if tgt.BackoffAfter != 5 {
+		t.Errorf("BackoffAfter = %d, want 5", tgt.BackoffAfter)
+	}
+}
+
+func TestLoad_AdaptiveIntervalInvalidMaxInterval(t *testing.T) {
+	content := `
+targets:
+  - name: test
+    endpoint: "https://example.com"
+    model: "gpt-4o"
+    adaptive_interval: true
+    interval: 300s
+    max_interval: 60s
+`
+	path := writeTemp(t, content)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for max_interval < interval, got nil")
+	}
+	if got := err.Error(); !contains(got, "max_interval must be >= interval") {
+		t.Errorf("error = %q, want to contain %q", got, "max_interval must be >= interval")
 	}
 }
 

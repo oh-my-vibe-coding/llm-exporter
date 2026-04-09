@@ -19,6 +19,12 @@ targets:
     # light_prompt: "Hi"
     # light_max_tokens: 5
     #
+    # Adaptive interval: increase probe interval when target is stable,
+    # reset to base interval on failure. Reduces token usage by ~50%+.
+    # adaptive_interval: true
+    # max_interval: 1200s        # cap (default: 4x interval)
+    # backoff_after: 5           # consecutive successes before backing off (default: 5)
+    #
     # Prompt rotation: cycle through multiple prompts to avoid caching.
     # prompts:
     #   - "Hi"

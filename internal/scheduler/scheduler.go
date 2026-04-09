@@ -1,39 +1,22 @@
 package scheduler
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
-	"net/http"
 	"regexp"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/taosun/llm-exporter/internal/alerter"
 	"github.com/taosun/llm-exporter/internal/config"
 	"github.com/taosun/llm-exporter/internal/metrics"
 	"github.com/taosun/llm-exporter/internal/prober"
+	"github.com/taosun/llm-exporter/internal/status"
 )
-
-// TargetStatus represents the current state of a probe target.
-type TargetStatus struct {
-	Name           string  `json:"name"`
-	Model          string  `json:"model"`
-	Endpoint       string  `json:"endpoint"`
-	APIFormat      string  `json:"api_format"`
-	LastProbeTime  string  `json:"last_probe_time"`
-	Success        bool    `json:"last_success"`
-	Error          string  `json:"last_error,omitempty"`
-	Duration       float64 `json:"last_duration_seconds"`
-	TTFT           float64 `json:"last_ttft_seconds"`
-	ConsecFailures int     `json:"consecutive_failures"`
-	TotalProbes    int64   `json:"total_probes"`
-	TotalSuccesses int64   `json:"total_successes"`
-}
 
 type targetRunner struct {
 	target  config.Target
@@ -46,10 +29,9 @@ type Scheduler struct {
 	runners []targetRunner
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
-	webhook *config.WebhookConfig
 
-	statusMu sync.RWMutex
-	statuses map[string]*TargetStatus
+	tracker *status.Tracker
+	alerter *alerter.Alerter
 }
 
 func New(targets []config.Target, webhook *config.WebhookConfig) (*Scheduler, error) {
@@ -57,10 +39,11 @@ func New(targets []config.Target, webhook *config.WebhookConfig) (*Scheduler, er
 	if err != nil {
 		return nil, err
 	}
+	tracker := status.NewTracker()
 	return &Scheduler{
-		runners:  runners,
-		webhook:  webhook,
-		statuses: make(map[string]*TargetStatus),
+		runners: runners,
+		tracker: tracker,
+		alerter: alerter.New(webhook, tracker),
 	}, nil
 }
 
@@ -122,28 +105,17 @@ func (s *Scheduler) Reload(ctx context.Context, targets []config.Target, webhook
 
 	s.mu.Lock()
 	s.runners = runners
-	s.webhook = webhook
+	s.alerter = alerter.New(webhook, s.tracker)
 	s.mu.Unlock()
 
-	// Clear old statuses
-	s.statusMu.Lock()
-	s.statuses = make(map[string]*TargetStatus)
-	s.statusMu.Unlock()
-
+	s.tracker.Reset()
 	s.Run(ctx)
 	return nil
 }
 
 // GetStatuses returns a snapshot of all target statuses.
-func (s *Scheduler) GetStatuses() []TargetStatus {
-	s.statusMu.RLock()
-	defer s.statusMu.RUnlock()
-
-	result := make([]TargetStatus, 0, len(s.statuses))
-	for _, st := range s.statuses {
-		result = append(result, *st)
-	}
-	return result
+func (s *Scheduler) GetStatuses() []status.TargetStatus {
+	return s.tracker.GetAll()
 }
 
 func (s *Scheduler) runTarget(ctx context.Context, r targetRunner) {
@@ -169,21 +141,62 @@ func (s *Scheduler) runTarget(ctx context.Context, r targetRunner) {
 	}
 
 	var probeCount int
-	s.probe(ctx, r, labels, buildParams(t, probeCount))
-	probeCount++
+	var consecSuccess int
+	currentInterval := t.Interval
 
-	ticker := time.NewTicker(t.Interval)
-	defer ticker.Stop()
+	success := s.probe(ctx, r, labels, buildParams(t, probeCount))
+	probeCount++
+	if t.AdaptiveInterval {
+		newInterval, newConsec := adaptiveNext(t, success, consecSuccess)
+		if newInterval != currentInterval {
+			log.Printf("[%s] adaptive interval: %s -> %s (consec_success=%d)", t.Name, currentInterval, newInterval, newConsec)
+		}
+		currentInterval, consecSuccess = newInterval, newConsec
+	}
+
+	timer := time.NewTimer(currentInterval)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			s.probe(ctx, r, labels, buildParams(t, probeCount))
+		case <-timer.C:
+			success = s.probe(ctx, r, labels, buildParams(t, probeCount))
 			probeCount++
+			if t.AdaptiveInterval {
+				newInterval, newConsec := adaptiveNext(t, success, consecSuccess)
+				if newInterval != currentInterval {
+					log.Printf("[%s] adaptive interval: %s -> %s (consec_success=%d)", t.Name, currentInterval, newInterval, newConsec)
+				}
+				currentInterval, consecSuccess = newInterval, newConsec
+			}
+			timer.Reset(currentInterval)
 		}
 	}
+}
+
+// adaptiveNext computes the next interval based on probe result.
+// On failure, resets to the base interval. On success, doubles the interval
+// after BackoffAfter consecutive successes, capped at MaxInterval.
+func adaptiveNext(t config.Target, success bool, consecSuccess int) (time.Duration, int) {
+	if !success {
+		return t.Interval, 0
+	}
+	consecSuccess++
+	if consecSuccess <= t.BackoffAfter {
+		return t.Interval, consecSuccess
+	}
+	// Double for each success beyond the threshold.
+	doublings := consecSuccess - t.BackoffAfter
+	interval := t.Interval
+	for i := 0; i < doublings; i++ {
+		interval *= 2
+		if interval >= t.MaxInterval {
+			return t.MaxInterval, consecSuccess
+		}
+	}
+	return interval, consecSuccess
 }
 
 func buildParams(t config.Target, count int) prober.ProbeParams {
@@ -216,7 +229,7 @@ func probeType(t config.Target, params prober.ProbeParams) string {
 	return "full"
 }
 
-func (s *Scheduler) probe(ctx context.Context, r targetRunner, labels prometheus.Labels, params prober.ProbeParams) {
+func (s *Scheduler) probe(ctx context.Context, r targetRunner, labels prometheus.Labels, params prober.ProbeParams) bool {
 	t := r.target
 	probeCtx, cancel := context.WithTimeout(ctx, t.Timeout)
 	defer cancel()
@@ -227,7 +240,7 @@ func (s *Scheduler) probe(ctx context.Context, r targetRunner, labels prometheus
 	}
 
 	if result == nil {
-		return
+		return false
 	}
 
 	// Response validation: if expect_pattern is set and probe succeeded, check the response.
@@ -241,7 +254,12 @@ func (s *Scheduler) probe(ctx context.Context, r targetRunner, labels prometheus
 	}
 
 	// Update target status.
-	s.updateStatus(t, result)
+	s.tracker.Update(t.Name, t.Model, t.Endpoint, t.APIFormat, status.ProbeOutcome{
+		Success:  result.Success,
+		Duration: result.Duration,
+		TTFT:     result.TTFT,
+		Error:    result.Error,
+	})
 
 	if result.Success {
 		metrics.ProbeSuccess.With(labels).Set(1)
@@ -256,7 +274,6 @@ func (s *Scheduler) probe(ctx context.Context, r targetRunner, labels prometheus
 		metrics.ProbeTotalTokens.With(labels).Set(float64(result.TotalTokens))
 
 		// Token generation rate: output_tokens / generation_time
-		// Only calculate when we have enough data for a meaningful rate
 		genDuration := result.Duration - result.TTFT
 		if genDuration >= prober.MinTokenRateGenDuration && result.OutputTokens >= prober.MinTokenRateOutputTokens {
 			rate := float64(result.OutputTokens) / genDuration.Seconds()
@@ -299,95 +316,9 @@ func (s *Scheduler) probe(ctx context.Context, r targetRunner, labels prometheus
 		}
 
 		// Check webhook alert.
-		s.checkWebhook(t.Name)
+		s.alerter.Check(t.Name)
 	}
-}
-
-func (s *Scheduler) updateStatus(t config.Target, result *prober.ProbeResult) {
-	s.statusMu.Lock()
-	defer s.statusMu.Unlock()
-
-	st, ok := s.statuses[t.Name]
-	if !ok {
-		st = &TargetStatus{
-			Name:      t.Name,
-			Model:     t.Model,
-			Endpoint:  t.Endpoint,
-			APIFormat: t.APIFormat,
-		}
-		s.statuses[t.Name] = st
-	}
-
-	st.LastProbeTime = time.Now().Format(time.RFC3339)
-	st.Success = result.Success
-	st.Duration = result.Duration.Seconds()
-	st.TTFT = result.TTFT.Seconds()
-	st.TotalProbes++
-
-	if result.Success {
-		st.ConsecFailures = 0
-		st.TotalSuccesses++
-		st.Error = ""
-	} else {
-		st.ConsecFailures++
-		if result.Error != nil {
-			st.Error = result.Error.Error()
-		}
-	}
-}
-
-func (s *Scheduler) checkWebhook(targetName string) {
-	s.mu.Lock()
-	webhook := s.webhook
-	s.mu.Unlock()
-
-	if webhook == nil {
-		return
-	}
-
-	s.statusMu.RLock()
-	st, ok := s.statuses[targetName]
-	if !ok {
-		s.statusMu.RUnlock()
-		return
-	}
-	consecFailures := st.ConsecFailures
-	stCopy := *st
-	s.statusMu.RUnlock()
-
-	if consecFailures > 0 && consecFailures%webhook.ConsecutiveFailures == 0 {
-		go sendWebhook(webhook.URL, &stCopy)
-	}
-}
-
-func sendWebhook(url string, status *TargetStatus) {
-	payload, _ := json.Marshal(map[string]any{
-		"target":               status.Name,
-		"model":                status.Model,
-		"endpoint":             status.Endpoint,
-		"error":                status.Error,
-		"consecutive_failures": status.ConsecFailures,
-		"total_probes":         status.TotalProbes,
-		"timestamp":            time.Now().Format(time.RFC3339),
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		log.Printf("[webhook] failed to create request: %v", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("[webhook] send failed for %s: %v", status.Name, err)
-		return
-	}
-	resp.Body.Close()
-	log.Printf("[webhook] alert sent for %s (%d consecutive failures)", status.Name, status.ConsecFailures)
+	return result.Success
 }
 
 func truncate(s string, maxLen int) string {

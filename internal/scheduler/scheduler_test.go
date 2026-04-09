@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"testing"
+	"time"
 
 	"github.com/taosun/llm-exporter/internal/config"
 	"github.com/taosun/llm-exporter/internal/prober"
@@ -107,5 +108,74 @@ func TestProbeType(t *testing.T) {
 	noLight := config.Target{}
 	if got := probeType(noLight, full); got != "full" {
 		t.Errorf("probeType(noLight, full) = %q, want %q", got, "full")
+	}
+}
+
+func TestAdaptiveNext_Disabled(t *testing.T) {
+	// When consecSuccess < backoff_after, interval stays at base.
+	target := config.Target{
+		Interval:         5 * time.Minute,
+		AdaptiveInterval: true,
+		MaxInterval:      20 * time.Minute,
+		BackoffAfter:     5,
+	}
+
+	interval, consec := adaptiveNext(target, true, 0)
+	if interval != 5*time.Minute {
+		t.Errorf("interval = %v, want 5m", interval)
+	}
+	if consec != 1 {
+		t.Errorf("consec = %d, want 1", consec)
+	}
+}
+
+func TestAdaptiveNext_Backoff(t *testing.T) {
+	target := config.Target{
+		Interval:         5 * time.Minute,
+		AdaptiveInterval: true,
+		MaxInterval:      20 * time.Minute,
+		BackoffAfter:     3,
+	}
+
+	// After 3 successes (threshold), next success starts doubling.
+	interval, consec := adaptiveNext(target, true, 3)
+	if interval != 10*time.Minute {
+		t.Errorf("interval = %v, want 10m (first doubling)", interval)
+	}
+	if consec != 4 {
+		t.Errorf("consec = %d, want 4", consec)
+	}
+
+	// Another success => 2 doublings => 20m (= max_interval).
+	interval, consec = adaptiveNext(target, true, 4)
+	if interval != 20*time.Minute {
+		t.Errorf("interval = %v, want 20m (capped at max)", interval)
+	}
+	if consec != 5 {
+		t.Errorf("consec = %d, want 5", consec)
+	}
+
+	// Further success => still capped at max.
+	interval, consec = adaptiveNext(target, true, 10)
+	if interval != 20*time.Minute {
+		t.Errorf("interval = %v, want 20m (still capped)", interval)
+	}
+}
+
+func TestAdaptiveNext_ResetOnFailure(t *testing.T) {
+	target := config.Target{
+		Interval:         5 * time.Minute,
+		AdaptiveInterval: true,
+		MaxInterval:      20 * time.Minute,
+		BackoffAfter:     3,
+	}
+
+	// Failure resets to base interval regardless of previous consec count.
+	interval, consec := adaptiveNext(target, false, 10)
+	if interval != 5*time.Minute {
+		t.Errorf("interval = %v, want 5m (reset on failure)", interval)
+	}
+	if consec != 0 {
+		t.Errorf("consec = %d, want 0", consec)
 	}
 }
