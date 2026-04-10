@@ -2,6 +2,8 @@
 
 [English](README.md) | **中文**
 
+> **100% AI 编码** — 本项目的所有代码完全由 AI（Claude Code）编写。人类仅参与产品方向、需求定义和代码审查。
+
 Prometheus Exporter，用于监控大语言模型 API 的可用性和性能。定期向 LLM API 端点发起流式探测请求，采集网络延迟、首 Token 延迟（TTFT）和 Token 消耗量。
 
 类似于 [blackbox-exporter](https://github.com/prometheus/blackbox_exporter) 对 HTTP 端点的拨测，LLM Exporter 专注于大模型 API 的端到端可用性探测。

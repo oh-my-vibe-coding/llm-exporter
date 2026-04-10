@@ -2,6 +2,8 @@
 
 **English** | [中文](README_zh.md)
 
+> **100% AI-Coded** — All code in this project was written entirely by AI (Claude Code). Human involvement was limited to product direction, requirements, and code review.
+
 A Prometheus exporter for monitoring LLM API availability and performance. Periodically sends streaming probe requests to LLM API endpoints, collecting network latency, Time to First Token (TTFT), and token usage metrics.
 
 Think of it as [blackbox_exporter](https://github.com/prometheus/blackbox_exporter) for LLM APIs — end-to-end probing tailored for large language models.
