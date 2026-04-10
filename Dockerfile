@@ -20,9 +20,11 @@ RUN CGO_ENABLED=0 go build \
 # Runtime stage
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates && \
+    addgroup -S appgroup && adduser -S appuser -G appgroup
 COPY --from=builder /llm-exporter /usr/local/bin/llm-exporter
 
 EXPOSE 9101
+USER appuser
 ENTRYPOINT ["llm-exporter"]
 CMD ["--config", "/etc/llm-exporter/config.yaml"]
