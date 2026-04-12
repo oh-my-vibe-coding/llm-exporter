@@ -22,5 +22,16 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Coverage
+        run: |
+          go test -coverprofile=coverage.out ./...
+          total=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print $NF}' | sed 's/%//')
+          echo "Total coverage: ${total}%"
+          threshold=60
+          if [ "$(echo "$total < $threshold" | bc)" -eq 1 ]; then
+            echo "::error::Coverage ${total}% is below threshold ${threshold}%"
+            exit 1
+          fi
+
       - name: Vet
         run: go vet ./...

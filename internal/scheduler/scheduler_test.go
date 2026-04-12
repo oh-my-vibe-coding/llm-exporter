@@ -1,12 +1,65 @@
 package scheduler
 
 import (
+	"context"
+	"errors"
+	"regexp"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/alerter"
 	"github.com/oh-my-vibe-coding/llm-exporter/internal/config"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/metrics"
 	"github.com/oh-my-vibe-coding/llm-exporter/internal/prober"
+	"github.com/oh-my-vibe-coding/llm-exporter/internal/status"
 )
+
+// mockProber implements prober.Prober for testing.
+type mockProber struct {
+	result *prober.ProbeResult
+	err    error
+	calls  atomic.Int32
+}
+
+func (m *mockProber) Probe(_ context.Context, _ prober.ProbeParams) (*prober.ProbeResult, error) {
+	m.calls.Add(1)
+	return m.result, m.err
+}
+
+// testTarget returns a minimal config.Target for testing.
+func testTarget(name string) config.Target {
+	return config.Target{
+		Name:      name,
+		Endpoint:  "https://example.com",
+		Model:     "test-model",
+		APIFormat: "openai",
+		Prompt:    "hi",
+		MaxTokens: 10,
+		Timeout:   5 * time.Second,
+		Interval:  100 * time.Millisecond,
+	}
+}
+
+// newTestScheduler creates a Scheduler with a single mock prober for direct probe() testing.
+func newTestSchedulerWithMock(mock *mockProber, target config.Target) *Scheduler {
+	tracker := status.NewTracker()
+	return &Scheduler{
+		runners: []targetRunner{{target: target, prober: mock}},
+		tracker: tracker,
+		alerter: alerter.New(nil, tracker),
+	}
+}
+
+// registerMetrics registers metrics on a fresh registry to avoid global conflicts.
+func registerMetrics(t *testing.T) {
+	t.Helper()
+	metrics.Reset()
+	reg := prometheus.NewRegistry()
+	metrics.Register(reg)
+}
 
 func TestBuildParams_Default(t *testing.T) {
 	target := config.Target{
@@ -177,5 +230,259 @@ func TestAdaptiveNext_ResetOnFailure(t *testing.T) {
 	}
 	if consec != 0 {
 		t.Errorf("consec = %d, want 0", consec)
+	}
+}
+
+// --- probe() tests ---
+
+func TestProbe_Success(t *testing.T) {
+	registerMetrics(t)
+	target := testTarget("probe-ok")
+	mock := &mockProber{
+		result: &prober.ProbeResult{
+			Success:         true,
+			Duration:        500 * time.Millisecond,
+			ConnectDuration: 50 * time.Millisecond,
+			TTFT:            200 * time.Millisecond,
+			InputTokens:     10,
+			OutputTokens:    8,
+			TotalTokens:     18,
+			ResponseText:    "hello",
+		},
+	}
+
+	s := newTestSchedulerWithMock(mock, target)
+	labels := prometheus.Labels{
+		"provider": target.Name, "model": target.Model,
+		"endpoint": target.Endpoint, "api_format": target.APIFormat,
+	}
+
+	ok := s.probe(context.Background(), s.runners[0], labels, prober.ProbeParams{Prompt: "hi", MaxTokens: 10})
+	if !ok {
+		t.Error("probe() should return true for success")
+	}
+	if mock.calls.Load() != 1 {
+		t.Errorf("prober called %d times, want 1", mock.calls.Load())
+	}
+
+	statuses := s.GetStatuses()
+	if len(statuses) != 1 {
+		t.Fatalf("statuses len = %d, want 1", len(statuses))
+	}
+	if !statuses[0].Success {
+		t.Error("expected last_success=true after successful probe")
+	}
+}
+
+func TestProbe_Failure(t *testing.T) {
+	registerMetrics(t)
+	target := testTarget("probe-fail")
+	mock := &mockProber{
+		result: &prober.ProbeResult{
+			Success:   false,
+			Duration:  1 * time.Second,
+			ErrorType: "timeout",
+			Error:     errors.New("context deadline exceeded"),
+		},
+	}
+
+	s := newTestSchedulerWithMock(mock, target)
+	labels := prometheus.Labels{
+		"provider": target.Name, "model": target.Model,
+		"endpoint": target.Endpoint, "api_format": target.APIFormat,
+	}
+
+	ok := s.probe(context.Background(), s.runners[0], labels, prober.ProbeParams{Prompt: "hi", MaxTokens: 10})
+	if ok {
+		t.Error("probe() should return false for failure")
+	}
+
+	statuses := s.GetStatuses()
+	if len(statuses) != 1 {
+		t.Fatalf("statuses len = %d, want 1", len(statuses))
+	}
+	if statuses[0].Success {
+		t.Error("expected last_success=false after failed probe")
+	}
+}
+
+func TestProbe_NilResult(t *testing.T) {
+	registerMetrics(t)
+	target := testTarget("probe-nil")
+	mock := &mockProber{
+		result: nil,
+		err:    errors.New("connection refused"),
+	}
+
+	s := newTestSchedulerWithMock(mock, target)
+	labels := prometheus.Labels{
+		"provider": target.Name, "model": target.Model,
+		"endpoint": target.Endpoint, "api_format": target.APIFormat,
+	}
+
+	ok := s.probe(context.Background(), s.runners[0], labels, prober.ProbeParams{Prompt: "hi", MaxTokens: 10})
+	if ok {
+		t.Error("probe() should return false for nil result")
+	}
+}
+
+func TestProbe_ExpectPattern_Match(t *testing.T) {
+	registerMetrics(t)
+	target := testTarget("pattern-match")
+	target.ExpectPattern = "hello"
+	mock := &mockProber{
+		result: &prober.ProbeResult{
+			Success:      true,
+			Duration:     100 * time.Millisecond,
+			TTFT:         50 * time.Millisecond,
+			ResponseText: "hello world",
+		},
+	}
+
+	s := newTestSchedulerWithMock(mock, target)
+	s.runners[0].pattern = regexp.MustCompile(target.ExpectPattern)
+	labels := prometheus.Labels{
+		"provider": target.Name, "model": target.Model,
+		"endpoint": target.Endpoint, "api_format": target.APIFormat,
+	}
+
+	ok := s.probe(context.Background(), s.runners[0], labels, prober.ProbeParams{Prompt: "hi", MaxTokens: 10})
+	if !ok {
+		t.Error("probe() should return true when pattern matches")
+	}
+}
+
+func TestProbe_ExpectPattern_Mismatch(t *testing.T) {
+	registerMetrics(t)
+	target := testTarget("pattern-mismatch")
+	target.ExpectPattern = "hello"
+	mock := &mockProber{
+		result: &prober.ProbeResult{
+			Success:      true,
+			Duration:     100 * time.Millisecond,
+			TTFT:         50 * time.Millisecond,
+			ResponseText: "goodbye",
+		},
+	}
+
+	s := newTestSchedulerWithMock(mock, target)
+	s.runners[0].pattern = regexp.MustCompile(target.ExpectPattern)
+	labels := prometheus.Labels{
+		"provider": target.Name, "model": target.Model,
+		"endpoint": target.Endpoint, "api_format": target.APIFormat,
+	}
+
+	ok := s.probe(context.Background(), s.runners[0], labels, prober.ProbeParams{Prompt: "hi", MaxTokens: 10})
+	if ok {
+		t.Error("probe() should return false when pattern doesn't match")
+	}
+}
+
+// --- Run/Stop/Reload tests ---
+
+func TestRunStop(t *testing.T) {
+	registerMetrics(t)
+	mock := &mockProber{
+		result: &prober.ProbeResult{
+			Success:  true,
+			Duration: 10 * time.Millisecond,
+			TTFT:     5 * time.Millisecond,
+		},
+	}
+
+	target := testTarget("run-stop")
+	target.Interval = 50 * time.Millisecond
+
+	s := newTestSchedulerWithMock(mock, target)
+
+	ctx := context.Background()
+	s.Run(ctx)
+
+	// Wait enough for at least 1 probe (initial jitter is capped at min(interval, 30s))
+	time.Sleep(200 * time.Millisecond)
+
+	s.Stop()
+
+	if mock.calls.Load() < 1 {
+		t.Errorf("prober called %d times, want >= 1", mock.calls.Load())
+	}
+}
+
+func TestReload(t *testing.T) {
+	registerMetrics(t)
+	mock1 := &mockProber{
+		result: &prober.ProbeResult{
+			Success:  true,
+			Duration: 10 * time.Millisecond,
+			TTFT:     5 * time.Millisecond,
+		},
+	}
+
+	target1 := testTarget("reload-old")
+	target1.Interval = 50 * time.Millisecond
+
+	s := newTestSchedulerWithMock(mock1, target1)
+
+	ctx := context.Background()
+	s.Run(ctx)
+	time.Sleep(150 * time.Millisecond)
+
+	// Reload with a new target
+	newTargets := []config.Target{testTarget("reload-new")}
+	err := s.Reload(ctx, newTargets, nil)
+	if err != nil {
+		t.Fatalf("Reload() error: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	s.Stop()
+
+	// Verify new target is running (GetStatuses returns it)
+	statuses := s.GetStatuses()
+	found := false
+	for _, st := range statuses {
+		if st.Name == "reload-new" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected to find 'reload-new' in statuses after reload")
+	}
+}
+
+func TestGetStatuses_AfterProbe(t *testing.T) {
+	registerMetrics(t)
+	target := testTarget("get-status")
+	mock := &mockProber{
+		result: &prober.ProbeResult{
+			Success:  true,
+			Duration: 100 * time.Millisecond,
+			TTFT:     50 * time.Millisecond,
+		},
+	}
+
+	s := newTestSchedulerWithMock(mock, target)
+	labels := prometheus.Labels{
+		"provider": target.Name, "model": target.Model,
+		"endpoint": target.Endpoint, "api_format": target.APIFormat,
+	}
+
+	s.probe(context.Background(), s.runners[0], labels, prober.ProbeParams{Prompt: "hi", MaxTokens: 10})
+
+	statuses := s.GetStatuses()
+	if len(statuses) == 0 {
+		t.Fatal("GetStatuses() returned empty after probe")
+	}
+	if statuses[0].Name != "get-status" {
+		t.Errorf("Name = %q, want %q", statuses[0].Name, "get-status")
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	if got := truncate("short", 10); got != "short" {
+		t.Errorf("truncate(short, 10) = %q, want %q", got, "short")
+	}
+	if got := truncate("this is a long string", 10); got != "this is a ..." {
+		t.Errorf("truncate(long, 10) = %q, want %q", got, "this is a ...")
 	}
 }
