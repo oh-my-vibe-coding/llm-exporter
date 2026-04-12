@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [2.0.5] - 2026-04-12
+
+### Fixed
+
+- Prevent Slowloris attack by setting ReadHeaderTimeout on HTTP server (CWE-400)
+
+### Tests
+
+- Add comprehensive test coverage for all prober implementations
+  (anthropic, google, openai, azure, openai_compat)
+- Add scheduler core tests (probe, Run/Stop/Reload lifecycle)
+- Add metrics, version, and main HTTP handler tests
+- Total coverage: 73.1%
+
+### CI
+
+- Add test coverage threshold (60%) to CI pipeline
+
 ## [2.0.4] - 2026-04-10
 
 ### Fixed
