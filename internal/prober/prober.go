@@ -21,9 +21,52 @@ type ProbeResult struct {
 	InputTokens     int
 	OutputTokens    int
 	TotalTokens     int
-	ResponseText    string
-	ErrorType       string
-	Error           error
+
+	// ReasoningTokens counts the reasoning/thinking tokens (o-series, extended
+	// thinking, Gemini thoughts). For OpenAI Chat Completions it comes from
+	// usage.completion_tokens_details.reasoning_tokens; for Responses API from
+	// usage.output_tokens_details.reasoning_tokens; for Gemini from
+	// usageMetadata.thoughtsTokenCount. Anthropic does not expose a separate
+	// count — thinking tokens are billed as output_tokens.
+	ReasoningTokens int
+
+	// CachedInputTokens counts prompt tokens served from provider-side prompt
+	// caches. OpenAI: usage.prompt_tokens_details.cached_tokens; Anthropic:
+	// cache_read_input_tokens; Gemini: usageMetadata.cachedContentTokenCount.
+	CachedInputTokens int
+
+	// CacheCreationTokens counts tokens written into the prompt cache on this
+	// call (Anthropic cache_creation_input_tokens). Zero for providers that do
+	// not expose this.
+	CacheCreationTokens int
+
+	// HTTPStatusCode is the HTTP response status. 0 if the request never
+	// completed (network/timeout error).
+	HTTPStatusCode int
+
+	// RateLimitRemainingRequests / RateLimitRemainingTokens are parsed from
+	// provider rate-limit response headers when present. -1 means "not reported".
+	RateLimitRemainingRequests int
+	RateLimitRemainingTokens   int
+
+	// SSLCertNotAfter is the earliest PeerCertificate NotAfter from the TLS
+	// handshake. Zero if the probe did not perform a TLS handshake (plain HTTP
+	// or connection reuse).
+	SSLCertNotAfter time.Time
+
+	ResponseText string
+	ErrorType    string
+	Error        error
+}
+
+// newProbeResult returns a ProbeResult with rate-limit counters initialised to
+// -1 so downstream consumers can distinguish "provider did not report" from
+// "zero remaining".
+func newProbeResult() *ProbeResult {
+	return &ProbeResult{
+		RateLimitRemainingRequests: -1,
+		RateLimitRemainingTokens:   -1,
+	}
 }
 
 // ProbeParams holds per-probe parameters that may vary between light and full probes.
