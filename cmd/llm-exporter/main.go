@@ -137,7 +137,7 @@ func main() {
 				cancel()
 				shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer shutdownCancel()
-				server.Shutdown(shutdownCtx)
+				_ = server.Shutdown(shutdownCtx)
 				return
 			}
 		}
@@ -166,7 +166,7 @@ func watchConfigFile(ctx context.Context, configPath string, sched *scheduler.Sc
 		log.Printf("watch-config: failed to create watcher: %v", err)
 		return
 	}
-	defer watcher.Close()
+	defer func() { _ = watcher.Close() }()
 
 	if err := watcher.Add(dir); err != nil {
 		log.Printf("watch-config: failed to watch %s: %v", dir, err)

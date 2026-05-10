@@ -1,9 +1,11 @@
+version: "2"
+
 run:
   timeout: 5m
   go: "1.26"
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - govet
@@ -12,33 +14,49 @@ linters:
     - ineffassign
     - misspell
     - unused
-    - goimports
     - gosec
     - unconvert
     - gocritic
-
-linters-settings:
-  gosec:
-    excludes:
-      # G115: integer overflow conversion - legitimate uses in token counting.
-      - G115
-      # G402: TLS MinVersion is enforced by net/http default (TLS 1.2+) in Go 1.23.
-      - G402
-      # G404: math/rand is fine for probe jitter (not security-sensitive).
-      - G404
-  revive:
+  settings:
+    errcheck:
+      exclude-functions:
+        # defer x.Close() is idiomatic; the Close error on response bodies
+        # and fsnotify watchers has no remediation path.
+        - (io.Closer).Close
+        - (*net/http.Response).Body.Close
+        - (net/http.ResponseWriter).Write
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gosec:
+      excludes:
+        # G115: integer overflow conversion - legitimate uses in token counting.
+        - G115
+        # G304: os.ReadFile on a user-supplied --config path is by design.
+        - G304
+        # G402: TLS MinVersion is enforced by net/http default (TLS 1.2+) in Go 1.26.
+        - G402
+        # G404: math/rand is fine for probe jitter (not security-sensitive).
+        - G404
+        # G706: log-format taint analysis — probe target URLs are intentionally logged.
+        - G706
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+  exclusions:
     rules:
-      - name: unused-parameter
-        disabled: true
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+      # Graceful-shutdown path: discarding server.Shutdown errors is fine.
+      - path: cmd/llm-exporter/main\.go
+        linters:
+          - errcheck
+          - gosec
+        text: "server.Shutdown"
 
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
-    # Generated or tightly-coupled code paths may legitimately ignore errors.
-    - path: cmd/llm-exporter/main\.go
-      linters:
-        - errcheck
-      text: "Error return value of `server.Shutdown`"
+formatters:
+  enable:
+    - goimports

@@ -75,6 +75,6 @@ func sendWebhook(url string, st *status.TargetStatus) {
 		log.Printf("[webhook] send failed for %s: %v", st.Name, err)
 		return
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	log.Printf("[webhook] alert sent for %s (%d consecutive failures)", st.Name, st.ConsecFailures)
 }
