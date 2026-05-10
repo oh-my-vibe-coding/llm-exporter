@@ -293,7 +293,7 @@ targets:                      # 探测目标列表
     endpoint: "https://..."   # 必填，API 端点
     api_key: "${ENV_VAR}"     # API Key，支持环境变量展开
     model: "model-name"       # 必填，模型标识
-    api_format: "openai"      # openai | anthropic | google | azure
+    api_format: "openai"      # openai | openai-responses | anthropic | google | azure
     prompt: "..."             # 自定义探测 prompt
     prompts: ["A", "B"]       # 多 prompt 轮换（与 prompt 二选一）
     timeout: 30s              # 单次探测超时

@@ -11,18 +11,22 @@ Think of it as [blackbox_exporter](https://github.com/prometheus/blackbox_export
 ## Features
 
 - **Streaming TTFT measurement** — All APIs probed via streaming requests for precise Time to First Token measurement
-- **Multi-provider support** — OpenAI / Anthropic / Google Gemini / Azure OpenAI, plus any OpenAI-compatible service
-- **Wide provider coverage** — DashScope (Alibaba), Volcengine Ark (ByteDance), DeepSeek, Mistral, OpenRouter, local Ollama, and more
+- **Multi-provider support** — OpenAI Chat Completions + Responses API, Anthropic, Google Gemini, Azure OpenAI, plus any OpenAI-compatible service
+- **Reasoning & cache token tracking** — `reasoning_tokens`, `cached_input_tokens`, `cache_creation_tokens` captured from OpenAI / Anthropic / Gemini usage fields
+- **Wide provider coverage** — xAI Grok, Groq, Cerebras, Together, Fireworks, Moonshot/Kimi, Zhipu GLM, SiliconFlow, DashScope (Alibaba), Volcengine Ark (ByteDance), DeepSeek, Mistral, OpenRouter, local Ollama, and more
+- **TLS cert expiry + rate-limit visibility** — Exporter surfaces earliest-cert `NotAfter` and provider `x-ratelimit-remaining-*` headers as Prometheus gauges
 - **Lightweight** — Only depends on `prometheus/client_golang`, `gopkg.in/yaml.v3`, and `fsnotify/fsnotify` — no LLM SDKs
-- **Single binary** — Go compiled, deploys as binary / Docker / Kubernetes
+- **Single binary** — Go 1.23+ compiled, deploys as binary / Docker / Kubernetes
 - **Flexible config** — YAML with `${ENV_VAR}` expansion, custom headers, and custom API paths
 - **Hot reload** — SIGHUP signal, HTTP `/-/reload` endpoint, or `--watch-config` file watcher
+- **Multi-target `/probe` mode** — blackbox_exporter-style `/probe?target=<url>&module=<name>` for file_sd / dynamic target discovery
+- **Native histograms** — Duration / TTFT histograms dual-emit classic + native (Prometheus 2.50+ stores the native form)
 - **Webhook alerting** — Sends webhook notifications (Slack/Teams/etc.) after consecutive probe failures
 - **Prompt rotation** — Cycle through multiple prompts to avoid provider-side caching
 - **Response validation** — Regex match on model output to verify the model is actually working
 - **Adaptive probe interval** — Automatically reduces probe frequency when stable, resets to base interval on failure
 - **Non-streaming mode** — `stream: false` for APIs that don't support streaming
-- **Ops-friendly** — `--validate` config check, `--version` info, `/api/v1/targets` status API
+- **Ops-friendly** — `--validate` config check, `--version` info, `/api/v1/targets` status API, `llm_exporter_build_info` + Go runtime metrics, example Prometheus rules
 
 ## Quick Start
 
@@ -105,6 +109,8 @@ Type=simple
 User=llm-exporter
 Group=llm-exporter
 ExecStart=/usr/local/bin/llm-exporter --config /etc/llm-exporter/config.yaml
+# Optional: append --watch-config to auto-reload on config file changes
+# (systemd deployments typically rely on `systemctl reload` instead)
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
@@ -496,15 +502,23 @@ All `${VAR_NAME}` values in the config file are automatically replaced with the 
 | Metric | Type | Description |
 |--------|------|-------------|
 | `llm_probe_success` | Gauge | Whether the last probe succeeded (1=success, 0=failure) |
-| `llm_probe_duration_seconds` | Histogram | Full request duration (from request start to stream end) |
-| `llm_probe_connect_duration_seconds` | Histogram | Connection setup time (DNS + TCP + TLS) |
-| `llm_probe_ttft_seconds` | Histogram | Time to First Token (from request start to first content token) |
+| `llm_probe_duration_seconds` | Histogram (+ native) | Full request duration (from request start to stream end) |
+| `llm_probe_connect_duration_seconds` | Histogram (+ native) | Connection setup time (DNS + TCP + TLS) |
+| `llm_probe_ttft_seconds` | Histogram (+ native) | Time to First Token (from request start to first content token) |
 | `llm_probe_input_tokens` | Gauge | Input tokens for the last probe |
 | `llm_probe_output_tokens` | Gauge | Output tokens for the last probe |
 | `llm_probe_total_tokens` | Gauge | Total tokens consumed by the last probe |
+| `llm_probe_reasoning_tokens` | Gauge | Reasoning/thinking tokens (OpenAI o-series/Responses, Gemini thoughts). Anthropic reports 0 here — thinking tokens are billed as output_tokens. |
+| `llm_probe_cached_input_tokens` | Gauge | Prompt tokens served from provider prompt cache |
+| `llm_probe_cache_creation_tokens` | Gauge | Tokens written to the provider prompt cache on the last probe (Anthropic) |
 | `llm_probe_token_rate` | Gauge | Token generation rate (output_tokens / generation_time, tok/s) |
 | `llm_probe_last_success_timestamp_seconds` | Gauge | Unix timestamp of the last successful probe |
-| `llm_probe_errors_total` | Counter | Cumulative error count by `error_type` |
+| `llm_probe_rate_limit_remaining{kind}` | Gauge | Remaining rate-limit budget from provider response headers. `kind` is `requests` or `tokens` |
+| `llm_probe_ssl_earliest_cert_expiry_timestamp_seconds` | Gauge | Earliest TLS peer certificate `NotAfter` observed on the last probe |
+| `llm_probe_errors_total` | Counter | Cumulative error count by `error_type` and HTTP `status` |
+| `llm_exporter_build_info` | Gauge | Constant 1 labelled with `version`, `git_commit`, `build_time`, `go_version` |
+
+Classic histograms are emitted alongside native histograms (`NativeHistogramBucketFactor=1.1`). Prometheus 2.50+ will store the native form; older versions transparently fall back to classic buckets.
 
 ### Labels
 
@@ -515,27 +529,32 @@ All metrics carry these labels:
 | `provider` | Target name (from config `name` field) |
 | `model` | Model name |
 | `endpoint` | API endpoint URL |
-| `api_format` | API format (openai / anthropic / google / azure) |
+| `api_format` | API format (openai / openai-responses / anthropic / google / azure) |
 
-`llm_probe_errors_total` has an additional `error_type` label:
+`llm_probe_errors_total` has two additional labels: `error_type` (category) and `status` (HTTP status code; `0` for non-HTTP failures).
 
 | error_type | Description |
 |------------|-------------|
 | `timeout` | Request timed out |
 | `canceled` | Request canceled (during reload or shutdown) |
-| `auth` | Authentication failure (HTTP 401/403) |
-| `rate_limit` | Rate limited (HTTP 429) |
-| `network` | Network error (DNS failure, connection refused, etc.) |
-| `api_error` | Other HTTP error status codes |
+| `auth` | Authentication failure (HTTP 401/403 or `invalid_api_key`) |
+| `rate_limit` | Rate limited (HTTP 429 or Gemini `RESOURCE_EXHAUSTED`) |
+| `overloaded` | Provider overloaded (HTTP 529 or Anthropic `overloaded_error`) |
+| `quota_exceeded` | Billing / quota exhausted (OpenAI `insufficient_quota`) |
+| `context_length` | Prompt exceeded the model's context window |
+| `content_filter` | Blocked by the provider's content policy |
+| `http_4xx` | Other 4xx error |
+| `http_5xx` | 5xx server error |
+| `network` / `dns_error` / `tls_error` / `connection_refused` | Network-layer failures |
 | `parse_error` | Response parse failure or empty stream |
 | `validation_error` | Response didn't match `expect_pattern` regex |
 
 ### Histogram Buckets
 
 ```
-llm_probe_duration_seconds:         0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60
+llm_probe_duration_seconds:         0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300, 600
 llm_probe_connect_duration_seconds: 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5
-llm_probe_ttft_seconds:             0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20
+llm_probe_ttft_seconds:             0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 60, 120
 ```
 
 ## Prometheus Config
@@ -659,7 +678,8 @@ make docker              # Build Docker image
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/metrics` | GET | Prometheus metrics |
+| `/metrics` | GET | Prometheus metrics for all scheduled targets |
+| `/probe` | GET | Run a one-shot probe: `/probe?target=<endpoint>&module=<name>`. Uses a module defined under `modules:` in the config. blackbox_exporter-compatible pattern — useful with file_sd or Consul service discovery |
 | `/healthz` | GET | Health check, returns "ok" |
 | `/-/reload` | POST | Trigger config hot reload |
 | `/api/v1/targets` | GET | Current status of all probe targets (JSON) |

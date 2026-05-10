@@ -11,18 +11,22 @@ Prometheus Exporter，用于监控大语言模型 API 的可用性和性能。�
 ## 功能特性
 
 - **流式 TTFT 测量** — 所有 API 均使用 streaming 请求，精确测量首 Token 到达时间
-- **多 API 格式支持** — OpenAI / Anthropic / Google Gemini / Azure OpenAI，以及所有 OpenAI 兼容的服务
-- **国内外厂商** — 阿里百炼、字节方舟、DeepSeek、Mistral、OpenRouter 等开箱可用
+- **多 API 格式支持** — OpenAI Chat Completions + Responses API、Anthropic、Google Gemini、Azure OpenAI，以及所有 OpenAI 兼容的服务
+- **推理与缓存 tokens 可观测** — 采集 `reasoning_tokens` / `cached_input_tokens` / `cache_creation_tokens`（OpenAI / Anthropic / Gemini 各自的 usage 字段）
+- **国内外厂商** — xAI Grok、Groq、Cerebras、Together、Fireworks、Moonshot/Kimi、智谱 GLM、SiliconFlow、阿里百炼、字节方舟、DeepSeek、Mistral、OpenRouter 等开箱可用
+- **TLS 证书过期 + 速率限制可视化** — 自动暴露最早证书 `NotAfter` 与 `x-ratelimit-remaining-*` 响应头
 - **轻量少依赖** — 仅依赖 `prometheus/client_golang`、`gopkg.in/yaml.v3` 和 `fsnotify/fsnotify`，不引入任何 LLM SDK
-- **单二进制部署** — Go 编译，支持二进制 / Docker / Kubernetes 部署
+- **单二进制部署** — Go 1.23+ 编译，支持二进制 / Docker / Kubernetes 部署
 - **灵活配置** — YAML 配置，支持 `${ENV_VAR}` 环境变量展开、自定义请求头和 API 路径
 - **配置热重载** — 支持 SIGHUP 信号、HTTP `/-/reload` 接口、`--watch-config` 文件监听三种方式
+- **多目标 `/probe` 模式** — 兼容 blackbox_exporter 的 `/probe?target=<url>&module=<name>`，适合 file_sd / 动态目标发现
+- **Native histogram** — duration / TTFT 同时暴露 classic buckets 与 native histogram（Prometheus 2.50+ 存储 native）
 - **Webhook 告警** — 连续探测失败后自动发送 webhook 通知（Slack/飞书/钉钉等）
 - **Prompt 轮换** — 配置多个 prompt 轮流使用，避免 provider 缓存
 - **响应验证** — 正则匹配模型输出内容，确认模型真正在正常工作
 - **自适应探测间隔** — 服务稳定时自动降低探测频率节省 token，故障时立即恢复高频探测
 - **非流式探测** — 支持 `stream: false` 模式，兼容不支持流式的 API
-- **运维友好** — `--validate` 配置校验、`--version` 版本信息、`/api/v1/targets` 状态 API
+- **运维友好** — `--validate` 配置校验、`--version` 版本信息、`/api/v1/targets` 状态 API、`llm_exporter_build_info` + Go runtime 指标、`example-rules.yml` 示例告警
 
 ## 快速开始
 
@@ -110,6 +114,8 @@ Type=simple
 User=llm-exporter
 Group=llm-exporter
 ExecStart=/usr/local/bin/llm-exporter --config /etc/llm-exporter/config.yaml
+# 可选：追加 --watch-config 可在配置文件变更时自动重载
+# （systemd 部署通常使用 `systemctl reload` 触发，二者按需选择）
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
@@ -525,15 +531,23 @@ targets:
 | 指标名 | 类型 | 说明 |
 |--------|------|------|
 | `llm_probe_success` | Gauge | 最近一次探测是否成功（1=成功, 0=失败） |
-| `llm_probe_duration_seconds` | Histogram | 完整请求时长（从发起请求到流结束） |
-| `llm_probe_connect_duration_seconds` | Histogram | 连接建立耗时（DNS + TCP + TLS） |
-| `llm_probe_ttft_seconds` | Histogram | 首 Token 延迟（从发起请求到收到第一个内容 token） |
+| `llm_probe_duration_seconds` | Histogram (+ native) | 完整请求时长（从发起请求到流结束） |
+| `llm_probe_connect_duration_seconds` | Histogram (+ native) | 连接建立耗时（DNS + TCP + TLS） |
+| `llm_probe_ttft_seconds` | Histogram (+ native) | 首 Token 延迟（从发起请求到收到第一个内容 token） |
 | `llm_probe_input_tokens` | Gauge | 本次探测的输入 token 数 |
 | `llm_probe_output_tokens` | Gauge | 本次探测的输出 token 数 |
 | `llm_probe_total_tokens` | Gauge | 本次探测消耗的 token 总数 |
+| `llm_probe_reasoning_tokens` | Gauge | 推理 / 思考 tokens（OpenAI o 系列 / Responses API、Gemini thoughts）。Anthropic 恒为 0（thinking 计入 output_tokens） |
+| `llm_probe_cached_input_tokens` | Gauge | 命中提供方 prompt cache 的输入 tokens |
+| `llm_probe_cache_creation_tokens` | Gauge | 本次探测写入 prompt cache 的 tokens（Anthropic） |
 | `llm_probe_token_rate` | Gauge | Token 生成速率（output_tokens / generation_time, tok/s） |
 | `llm_probe_last_success_timestamp_seconds` | Gauge | 最后一次探测成功的 Unix 时间戳 |
-| `llm_probe_errors_total` | Counter | 累计错误次数，按 `error_type` 分类 |
+| `llm_probe_rate_limit_remaining{kind}` | Gauge | 从响应头解析出的剩余配额。`kind` 为 `requests` 或 `tokens` |
+| `llm_probe_ssl_earliest_cert_expiry_timestamp_seconds` | Gauge | 最近一次 TLS 握手中最早的 `PeerCertificate.NotAfter` |
+| `llm_probe_errors_total` | Counter | 累计错误次数，按 `error_type` 和 HTTP `status` 分类 |
+| `llm_exporter_build_info` | Gauge | 常数 1，携带 `version` / `git_commit` / `build_time` / `go_version` 标签 |
+
+Histogram 指标同时暴露 classic buckets 与 native histogram（`NativeHistogramBucketFactor=1.1`）。Prometheus 2.50+ 会优先存储 native 形式，低版本回落到 classic。
 
 ### Labels
 
@@ -544,27 +558,32 @@ targets:
 | `provider` | 目标名称（对应配置中的 `name`） |
 | `model` | 模型名称 |
 | `endpoint` | API 端点地址 |
-| `api_format` | API 格式（openai / anthropic / google / azure） |
+| `api_format` | API 格式（openai / openai-responses / anthropic / google / azure） |
 
-`llm_probe_errors_total` 额外携带 `error_type` 标签：
+`llm_probe_errors_total` 额外携带两个标签：`error_type`（类别）和 `status`（HTTP 状态码；非 HTTP 错误为 `0`）。
 
 | error_type | 说明 |
 |------------|------|
 | `timeout` | 请求超时 |
 | `canceled` | 请求被取消（热重载或关闭期间） |
-| `auth` | 认证失败（HTTP 401/403） |
-| `rate_limit` | 限流（HTTP 429） |
-| `network` | 网络错误（DNS 解析失败、连接拒绝等） |
-| `api_error` | API 返回其他错误状态码 |
+| `auth` | 认证失败（HTTP 401/403 或 `invalid_api_key`） |
+| `rate_limit` | 限流（HTTP 429 或 Gemini `RESOURCE_EXHAUSTED`） |
+| `overloaded` | 提供方过载（HTTP 529 或 Anthropic `overloaded_error`） |
+| `quota_exceeded` | 账单 / 配额耗尽（OpenAI `insufficient_quota`） |
+| `context_length` | 输入超出上下文窗口 |
+| `content_filter` | 被提供方内容策略拦截 |
+| `http_4xx` | 其他 4xx 错误 |
+| `http_5xx` | 5xx 服务端错误 |
+| `network` / `dns_error` / `tls_error` / `connection_refused` | 网络层失败细分 |
 | `parse_error` | 响应解析失败或流中无内容 |
 | `validation_error` | 响应内容未匹配 `expect_pattern` 正则 |
 
 ### Histogram Buckets
 
 ```
-llm_probe_duration_seconds:         0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60
+llm_probe_duration_seconds:         0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300, 600
 llm_probe_connect_duration_seconds: 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5
-llm_probe_ttft_seconds:             0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20
+llm_probe_ttft_seconds:             0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 60, 120
 ```
 
 ## Prometheus 配置
@@ -879,7 +898,8 @@ make clean
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/metrics` | GET | Prometheus 指标 |
+| `/metrics` | GET | 返回所有已调度目标的 Prometheus 指标 |
+| `/probe` | GET | 单次探测：`/probe?target=<endpoint>&module=<name>`。配合配置文件中的 `modules:` 使用，兼容 blackbox_exporter 多目标模式，适合 file_sd / Consul 动态发现 |
 | `/healthz` | GET | 健康检查，返回 "ok" |
 | `/-/reload` | POST | 触发配置热重载 |
 | `/api/v1/targets` | GET | 返回所有探测目标的当前状态（JSON） |
