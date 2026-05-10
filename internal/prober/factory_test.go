@@ -15,7 +15,7 @@ func TestNew_AllFormats(t *testing.T) {
 		Timeout:  5 * time.Second,
 	}
 
-	formats := []string{"openai", "anthropic", "google", "azure"}
+	formats := []string{"openai", "openai-responses", "anthropic", "google", "azure"}
 	for _, f := range formats {
 		t.Run(f, func(t *testing.T) {
 			target := base

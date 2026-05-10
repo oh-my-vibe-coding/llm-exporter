@@ -72,7 +72,7 @@ func expandEnv(s string) string {
 }
 
 var validAPIFormats = map[string]bool{
-	"openai": true, "azure": true, "anthropic": true, "google": true,
+	"openai": true, "openai-responses": true, "azure": true, "anthropic": true, "google": true,
 }
 
 func Load(path string) (*Config, error) {
@@ -152,7 +152,7 @@ func Load(path string) (*Config, error) {
 
 		// --- Enum validation ---
 		if !validAPIFormats[t.APIFormat] {
-			return nil, fmt.Errorf("target %q: unsupported api_format %q (must be one of: openai, azure, anthropic, google)", t.Name, t.APIFormat)
+			return nil, fmt.Errorf("target %q: unsupported api_format %q (must be one of: openai, openai-responses, azure, anthropic, google)", t.Name, t.APIFormat)
 		}
 
 		// --- Numeric constraints ---

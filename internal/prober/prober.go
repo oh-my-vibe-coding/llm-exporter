@@ -85,6 +85,8 @@ func New(t config.Target) (Prober, error) {
 	switch t.APIFormat {
 	case "openai":
 		return NewOpenAI(t), nil
+	case "openai-responses":
+		return NewOpenAIResponses(t), nil
 	case "anthropic":
 		return NewAnthropic(t), nil
 	case "google":
