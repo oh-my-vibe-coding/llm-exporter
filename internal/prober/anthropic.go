@@ -26,7 +26,7 @@ func NewAnthropic(t config.Target) Prober {
 }
 
 func (p *anthropicProber) Probe(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
-	result := &ProbeResult{}
+	result := newProbeResult()
 
 	body := map[string]any{
 		"model":      p.target.Model,
@@ -75,11 +75,16 @@ func (p *anthropicProber) Probe(ctx context.Context, params ProbeParams) (*Probe
 	defer resp.Body.Close()
 
 	result.ConnectDuration = timings.duration()
+	populateFromResponse(result, resp)
 
 	if resp.StatusCode != http.StatusOK {
 		result.Duration = time.Since(start)
-		result.ErrorType = classifyHTTPStatus(resp.StatusCode)
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		if refined := classifyProviderBody(string(errBody)); refined != "" {
+			result.ErrorType = refined
+		} else {
+			result.ErrorType = classifyHTTPStatus(resp.StatusCode)
+		}
 		result.Error = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(errBody))
 		return result, result.Error
 	}
@@ -110,14 +115,16 @@ func (p *anthropicProber) Probe(ctx context.Context, params ProbeParams) (*Probe
 			if err := json.Unmarshal([]byte(event.Data), &ms); err != nil {
 				continue
 			}
-			if ms.Message.Usage.InputTokens > 0 {
-				result.InputTokens = ms.Message.Usage.InputTokens
-			}
+			applyAnthropicUsage(result, ms.Message.Usage)
 		case "content_block_delta":
 			var delta anthropicDelta
 			if err := json.Unmarshal([]byte(event.Data), &delta); err != nil {
 				continue
 			}
+			// Accept text_delta for normal output. thinking_delta /
+			// signature_delta / input_json_delta arrive on thinking and
+			// tool_use blocks; we don't surface them as text but they don't
+			// break parsing.
 			if delta.Delta.Type == "text_delta" && delta.Delta.Text != "" {
 				textBuf.WriteString(delta.Delta.Text)
 				if !ttftRecorded {
@@ -130,14 +137,14 @@ func (p *anthropicProber) Probe(ctx context.Context, params ProbeParams) (*Probe
 			if err := json.Unmarshal([]byte(event.Data), &md); err != nil {
 				continue
 			}
-			if md.Usage.OutputTokens > 0 {
-				result.OutputTokens = md.Usage.OutputTokens
-			}
+			applyAnthropicUsage(result, md.Usage)
 		}
 	}
 
 	result.Duration = time.Since(start)
-	result.TotalTokens = result.InputTokens + result.OutputTokens
+	if result.TotalTokens == 0 {
+		result.TotalTokens = result.InputTokens + result.OutputTokens
+	}
 	result.ResponseText = textBuf.String()
 	result.Success = ttftRecorded
 	if !ttftRecorded {
@@ -147,11 +154,36 @@ func (p *anthropicProber) Probe(ctx context.Context, params ProbeParams) (*Probe
 	return result, result.Error
 }
 
+// applyAnthropicUsage merges a usage object into the ProbeResult. Anthropic
+// reports usage twice — once in message_start (authoritative for input_tokens,
+// cache_creation_input_tokens, cache_read_input_tokens) and once in
+// message_delta (authoritative for output_tokens, cumulative). We take the
+// maximum of each field so either ordering yields a complete picture.
+func applyAnthropicUsage(r *ProbeResult, u anthropicUsage) {
+	if u.InputTokens > r.InputTokens {
+		r.InputTokens = u.InputTokens
+	}
+	if u.OutputTokens > r.OutputTokens {
+		r.OutputTokens = u.OutputTokens
+	}
+	if u.CacheCreationInputTokens > r.CacheCreationTokens {
+		r.CacheCreationTokens = u.CacheCreationInputTokens
+	}
+	if u.CacheReadInputTokens > r.CachedInputTokens {
+		r.CachedInputTokens = u.CacheReadInputTokens
+	}
+}
+
+type anthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
 type anthropicMessageStart struct {
 	Message struct {
-		Usage struct {
-			InputTokens int `json:"input_tokens"`
-		} `json:"usage"`
+		Usage anthropicUsage `json:"usage"`
 	} `json:"message"`
 }
 
@@ -163,7 +195,5 @@ type anthropicDelta struct {
 }
 
 type anthropicMessageDelta struct {
-	Usage struct {
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	Usage anthropicUsage `json:"usage"`
 }

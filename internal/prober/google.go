@@ -26,7 +26,7 @@ func NewGoogle(t config.Target) Prober {
 }
 
 func (p *googleProber) Probe(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
-	result := &ProbeResult{}
+	result := newProbeResult()
 
 	body := map[string]any{
 		"contents": []map[string]any{
@@ -79,11 +79,16 @@ func (p *googleProber) Probe(ctx context.Context, params ProbeParams) (*ProbeRes
 	defer resp.Body.Close()
 
 	result.ConnectDuration = timings.duration()
+	populateFromResponse(result, resp)
 
 	if resp.StatusCode != http.StatusOK {
 		result.Duration = time.Since(start)
-		result.ErrorType = classifyHTTPStatus(resp.StatusCode)
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		if refined := classifyProviderBody(string(errBody)); refined != "" {
+			result.ErrorType = refined
+		} else {
+			result.ErrorType = classifyHTTPStatus(resp.StatusCode)
+		}
 		result.Error = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(errBody))
 		return result, result.Error
 	}
@@ -135,6 +140,8 @@ func (p *googleProber) Probe(ctx context.Context, params ProbeParams) (*ProbeRes
 			result.InputTokens = chunk.UsageMetadata.PromptTokenCount
 			result.OutputTokens = chunk.UsageMetadata.CandidatesTokenCount
 			result.TotalTokens = chunk.UsageMetadata.TotalTokenCount
+			result.ReasoningTokens = chunk.UsageMetadata.ThoughtsTokenCount
+			result.CachedInputTokens = chunk.UsageMetadata.CachedContentTokenCount
 		}
 	}
 
@@ -157,8 +164,10 @@ type googleChunk struct {
 		} `json:"content"`
 	} `json:"candidates"`
 	UsageMetadata struct {
-		PromptTokenCount     int `json:"promptTokenCount"`
-		CandidatesTokenCount int `json:"candidatesTokenCount"`
-		TotalTokenCount      int `json:"totalTokenCount"`
+		PromptTokenCount        int `json:"promptTokenCount"`
+		CandidatesTokenCount    int `json:"candidatesTokenCount"`
+		TotalTokenCount         int `json:"totalTokenCount"`
+		ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
+		CachedContentTokenCount int `json:"cachedContentTokenCount"`
 	} `json:"usageMetadata"`
 }

@@ -63,7 +63,7 @@ func TestGoogleProbe_HTTPError(t *testing.T) {
 	}{
 		{http.StatusUnauthorized, "auth"},
 		{http.StatusTooManyRequests, "rate_limit"},
-		{http.StatusInternalServerError, "api_error"},
+		{http.StatusInternalServerError, "http_5xx"},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("HTTP_%d", tt.status), func(t *testing.T) {
@@ -143,5 +143,43 @@ func TestGoogleProbe_URLFormat(t *testing.T) {
 	}
 	if !strings.Contains(gotURL, "key=my-api-key") {
 		t.Errorf("URL missing API key: %s", gotURL)
+	}
+}
+
+// TestGoogleProbe_ThinkingAndCache verifies thoughtsTokenCount and
+// cachedContentTokenCount map to ReasoningTokens and CachedInputTokens.
+func TestGoogleProbe_ThinkingAndCache(t *testing.T) {
+	sseBody := `data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}
+
+data: {"candidates":[{"content":{"parts":[{"text":""}]}}],"usageMetadata":{"promptTokenCount":50,"candidatesTokenCount":8,"totalTokenCount":58,"thoughtsTokenCount":12,"cachedContentTokenCount":20}}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseBody)
+	}))
+	defer srv.Close()
+
+	p := NewGoogle(config.Target{
+		Endpoint: srv.URL,
+		APIKey:   "k",
+		Model:    "gemini-3.1-pro",
+		Timeout:  5 * time.Second,
+	})
+	result, err := p.Probe(context.Background(), ProbeParams{Prompt: "hi", MaxTokens: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected Success")
+	}
+	if result.ReasoningTokens != 12 {
+		t.Errorf("ReasoningTokens = %d, want 12", result.ReasoningTokens)
+	}
+	if result.CachedInputTokens != 20 {
+		t.Errorf("CachedInputTokens = %d, want 20", result.CachedInputTokens)
+	}
+	if result.TotalTokens != 58 {
+		t.Errorf("TotalTokens = %d, want 58", result.TotalTokens)
 	}
 }

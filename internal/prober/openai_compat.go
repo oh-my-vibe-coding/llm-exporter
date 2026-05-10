@@ -43,7 +43,7 @@ func (p *openaiCompatProber) Probe(ctx context.Context, params ProbeParams) (*Pr
 }
 
 func (p *openaiCompatProber) probeStreaming(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
-	result := &ProbeResult{}
+	result := newProbeResult()
 
 	body := map[string]any{
 		"model":      p.cfg.target.Model,
@@ -92,11 +92,16 @@ func (p *openaiCompatProber) probeStreaming(ctx context.Context, params ProbePar
 	defer resp.Body.Close()
 
 	result.ConnectDuration = timings.duration()
+	populateFromResponse(result, resp)
 
 	if resp.StatusCode != http.StatusOK {
 		result.Duration = time.Since(start)
-		result.ErrorType = classifyHTTPStatus(resp.StatusCode)
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		if refined := classifyProviderBody(string(errBody)); refined != "" {
+			result.ErrorType = refined
+		} else {
+			result.ErrorType = classifyHTTPStatus(resp.StatusCode)
+		}
 		result.Error = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(errBody))
 		return result, result.Error
 	}
@@ -139,6 +144,8 @@ func (p *openaiCompatProber) probeStreaming(ctx context.Context, params ProbePar
 			result.InputTokens = chunk.Usage.PromptTokens
 			result.OutputTokens = chunk.Usage.CompletionTokens
 			result.TotalTokens = chunk.Usage.TotalTokens
+			result.CachedInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+			result.ReasoningTokens = chunk.Usage.CompletionTokensDetails.ReasoningTokens
 		}
 	}
 
@@ -153,7 +160,7 @@ func (p *openaiCompatProber) probeStreaming(ctx context.Context, params ProbePar
 }
 
 func (p *openaiCompatProber) probeNonStreaming(ctx context.Context, params ProbeParams) (*ProbeResult, error) {
-	result := &ProbeResult{}
+	result := newProbeResult()
 
 	body := map[string]any{
 		"model":      p.cfg.target.Model,
@@ -198,11 +205,16 @@ func (p *openaiCompatProber) probeNonStreaming(ctx context.Context, params Probe
 	defer resp.Body.Close()
 
 	result.ConnectDuration = timings.duration()
+	populateFromResponse(result, resp)
 
 	if resp.StatusCode != http.StatusOK {
 		result.Duration = time.Since(start)
-		result.ErrorType = classifyHTTPStatus(resp.StatusCode)
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		if refined := classifyProviderBody(string(errBody)); refined != "" {
+			result.ErrorType = refined
+		} else {
+			result.ErrorType = classifyHTTPStatus(resp.StatusCode)
+		}
 		result.Error = fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(errBody))
 		return result, result.Error
 	}
@@ -234,6 +246,8 @@ func (p *openaiCompatProber) probeNonStreaming(ctx context.Context, params Probe
 	result.InputTokens = respData.Usage.PromptTokens
 	result.OutputTokens = respData.Usage.CompletionTokens
 	result.TotalTokens = respData.Usage.TotalTokens
+	result.CachedInputTokens = respData.Usage.PromptTokensDetails.CachedTokens
+	result.ReasoningTokens = respData.Usage.CompletionTokensDetails.ReasoningTokens
 
 	if !result.Success {
 		result.ErrorType = "parse_error"
@@ -248,11 +262,7 @@ type openaiChunk struct {
 			Content string `json:"content"`
 		} `json:"delta"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage openaiUsage `json:"usage"`
 }
 
 type openaiResponse struct {
@@ -261,9 +271,23 @@ type openaiResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage openaiUsage `json:"usage"`
+}
+
+type openaiUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+		AudioTokens  int `json:"audio_tokens"`
+	} `json:"prompt_tokens_details"`
+
+	CompletionTokensDetails struct {
+		ReasoningTokens          int `json:"reasoning_tokens"`
+		AudioTokens              int `json:"audio_tokens"`
+		AcceptedPredictionTokens int `json:"accepted_prediction_tokens"`
+		RejectedPredictionTokens int `json:"rejected_prediction_tokens"`
+	} `json:"completion_tokens_details"`
 }

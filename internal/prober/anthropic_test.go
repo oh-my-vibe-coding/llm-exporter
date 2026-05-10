@@ -78,7 +78,7 @@ func TestAnthropicProbe_HTTPError(t *testing.T) {
 		{http.StatusUnauthorized, "auth"},
 		{http.StatusForbidden, "auth"},
 		{http.StatusTooManyRequests, "rate_limit"},
-		{http.StatusInternalServerError, "api_error"},
+		{http.StatusInternalServerError, "http_5xx"},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("HTTP_%d", tt.status), func(t *testing.T) {
@@ -174,5 +174,71 @@ func TestAnthropicProbe_Headers(t *testing.T) {
 	}
 	if stream, ok := gotBody["stream"].(bool); !ok || !stream {
 		t.Errorf("body stream = %v, want true", gotBody["stream"])
+	}
+}
+
+// TestAnthropicProbe_CacheUsage verifies cache_creation_input_tokens and
+// cache_read_input_tokens are captured from message_start and message_delta,
+// and that thinking_delta events are ignored without breaking parsing.
+func TestAnthropicProbe_CacheUsage(t *testing.T) {
+	sseBody := `event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":100,"cache_creation_input_tokens":50,"cache_read_input_tokens":200}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"reason"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_delta
+data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"input_tokens":100,"output_tokens":7,"cache_creation_input_tokens":50,"cache_read_input_tokens":200}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("anthropic-ratelimit-requests-remaining", "50")
+		fmt.Fprint(w, sseBody)
+	}))
+	defer srv.Close()
+
+	p := NewAnthropic(config.Target{
+		Endpoint: srv.URL,
+		APIKey:   "test-key",
+		Model:    "claude-opus-4-7",
+		Timeout:  5 * time.Second,
+	})
+	result, err := p.Probe(context.Background(), ProbeParams{Prompt: "hi", MaxTokens: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected Success")
+	}
+	if result.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100", result.InputTokens)
+	}
+	if result.OutputTokens != 7 {
+		t.Errorf("OutputTokens = %d, want 7", result.OutputTokens)
+	}
+	if result.CacheCreationTokens != 50 {
+		t.Errorf("CacheCreationTokens = %d, want 50", result.CacheCreationTokens)
+	}
+	if result.CachedInputTokens != 200 {
+		t.Errorf("CachedInputTokens = %d, want 200", result.CachedInputTokens)
+	}
+	if result.RateLimitRemainingRequests != 50 {
+		t.Errorf("RateLimitRemainingRequests = %d, want 50", result.RateLimitRemainingRequests)
 	}
 }

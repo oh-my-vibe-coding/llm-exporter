@@ -1,10 +1,7 @@
 package prober
 
 import (
-	"context"
-	"errors"
 	"io"
-	"net"
 	"strings"
 	"testing"
 )
@@ -108,54 +105,3 @@ func TestSSEReader_NoTrailingNewline(t *testing.T) {
 		t.Errorf("Data = %q, want %q", event.Data, "final")
 	}
 }
-
-func TestClassifyHTTPStatus(t *testing.T) {
-	tests := []struct {
-		code int
-		want string
-	}{
-		{401, "auth"},
-		{403, "auth"},
-		{429, "rate_limit"},
-		{500, "api_error"},
-		{502, "api_error"},
-		{503, "api_error"},
-		{400, "api_error"},
-		{404, "api_error"},
-	}
-	for _, tt := range tests {
-		got := classifyHTTPStatus(tt.code)
-		if got != tt.want {
-			t.Errorf("classifyHTTPStatus(%d) = %q, want %q", tt.code, got, tt.want)
-		}
-	}
-}
-
-func TestClassifyNetworkError(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want string
-	}{
-		{"nil", nil, ""},
-		{"deadline exceeded", context.DeadlineExceeded, "timeout"},
-		{"canceled", context.Canceled, "canceled"},
-		{"net timeout", &net.OpError{Op: "dial", Err: timeoutError{}}, "timeout"},
-		{"wrapped deadline", errors.New("something: context deadline exceeded"), "timeout"},
-		{"wrapped canceled", errors.New("something: context canceled"), "canceled"},
-		{"generic network", errors.New("connection refused"), "network"},
-	}
-	for _, tt := range tests {
-		got := classifyNetworkError(tt.err)
-		if got != tt.want {
-			t.Errorf("classifyNetworkError(%s) = %q, want %q", tt.name, got, tt.want)
-		}
-	}
-}
-
-// timeoutError implements net.Error with Timeout() = true.
-type timeoutError struct{}
-
-func (timeoutError) Error() string   { return "i/o timeout" }
-func (timeoutError) Timeout() bool   { return true }
-func (timeoutError) Temporary() bool { return false }

@@ -85,8 +85,8 @@ func TestOpenAICompatProbe_Streaming_HTTPError(t *testing.T) {
 	if result.Success {
 		t.Error("expected Success=false")
 	}
-	if result.ErrorType != "api_error" {
-		t.Errorf("ErrorType = %q, want %q", result.ErrorType, "api_error")
+	if result.ErrorType != "http_5xx" {
+		t.Errorf("ErrorType = %q, want %q", result.ErrorType, "http_5xx")
 	}
 }
 
@@ -256,5 +256,94 @@ func TestOpenAICompatProbe_Headers(t *testing.T) {
 	}
 	if stream, ok := gotBody["stream"].(bool); !ok || !stream {
 		t.Errorf("body stream = %v, want true", gotBody["stream"])
+	}
+}
+
+// TestOpenAICompatProbe_Streaming_UsageDetails verifies that cached_tokens
+// and reasoning_tokens from usage.prompt_tokens_details /
+// completion_tokens_details are captured.
+func TestOpenAICompatProbe_Streaming_UsageDetails(t *testing.T) {
+	sseBody := `data: {"choices":[{"delta":{"content":"ok"}}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens_details":{"reasoning_tokens":30}}}
+
+data: [DONE]
+
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-ratelimit-remaining-requests", "99")
+		w.Header().Set("x-ratelimit-remaining-tokens", "9999")
+		fmt.Fprint(w, sseBody)
+	}))
+	defer srv.Close()
+
+	p := newOpenAICompat(openaiCompatConfig{
+		target: config.Target{
+			Endpoint: srv.URL,
+			APIKey:   "sk-test",
+			Model:    "gpt-5.5",
+			Timeout:  5 * time.Second,
+		},
+		buildURL: func(t config.Target) string { return t.Endpoint },
+		setAuth:  openaiAuth,
+	})
+
+	result, err := p.Probe(context.Background(), ProbeParams{Prompt: "hi", MaxTokens: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.CachedInputTokens != 40 {
+		t.Errorf("CachedInputTokens = %d, want 40", result.CachedInputTokens)
+	}
+	if result.ReasoningTokens != 30 {
+		t.Errorf("ReasoningTokens = %d, want 30", result.ReasoningTokens)
+	}
+	if result.RateLimitRemainingRequests != 99 {
+		t.Errorf("RateLimitRemainingRequests = %d, want 99", result.RateLimitRemainingRequests)
+	}
+	if result.RateLimitRemainingTokens != 9999 {
+		t.Errorf("RateLimitRemainingTokens = %d, want 9999", result.RateLimitRemainingTokens)
+	}
+	if result.HTTPStatusCode != 200 {
+		t.Errorf("HTTPStatusCode = %d, want 200", result.HTTPStatusCode)
+	}
+}
+
+// TestOpenAICompatProbe_NonStreaming_UsageDetails mirrors the streaming test
+// for the non-streaming code path.
+func TestOpenAICompatProbe_NonStreaming_UsageDetails(t *testing.T) {
+	body := `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":7},"completion_tokens_details":{"reasoning_tokens":2}}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	p := newOpenAICompat(openaiCompatConfig{
+		target: config.Target{
+			Endpoint: srv.URL,
+			APIKey:   "sk-test",
+			Model:    "gpt-4",
+			Timeout:  5 * time.Second,
+			Stream:   boolPtr(false),
+		},
+		buildURL: func(t config.Target) string { return t.Endpoint },
+		setAuth:  openaiAuth,
+	})
+
+	result, err := p.Probe(context.Background(), ProbeParams{Prompt: "hi", MaxTokens: 20})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("expected Success")
+	}
+	if result.CachedInputTokens != 7 {
+		t.Errorf("CachedInputTokens = %d, want 7", result.CachedInputTokens)
+	}
+	if result.ReasoningTokens != 2 {
+		t.Errorf("ReasoningTokens = %d, want 2", result.ReasoningTokens)
 	}
 }
