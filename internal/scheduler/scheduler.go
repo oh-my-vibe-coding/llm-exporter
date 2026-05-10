@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -272,6 +273,9 @@ func (s *Scheduler) probe(ctx context.Context, r targetRunner, labels prometheus
 		metrics.ProbeInputTokens.With(labels).Set(float64(result.InputTokens))
 		metrics.ProbeOutputTokens.With(labels).Set(float64(result.OutputTokens))
 		metrics.ProbeTotalTokens.With(labels).Set(float64(result.TotalTokens))
+		metrics.ProbeReasoningTokens.With(labels).Set(float64(result.ReasoningTokens))
+		metrics.ProbeCachedInputTokens.With(labels).Set(float64(result.CachedInputTokens))
+		metrics.ProbeCacheCreationTokens.With(labels).Set(float64(result.CacheCreationTokens))
 
 		// Token generation rate: output_tokens / generation_time
 		genDuration := result.Duration - result.TTFT
@@ -279,6 +283,8 @@ func (s *Scheduler) probe(ctx context.Context, r targetRunner, labels prometheus
 			rate := float64(result.OutputTokens) / genDuration.Seconds()
 			metrics.ProbeTokenRate.With(labels).Set(rate)
 		}
+
+		emitSideChannelMetrics(labels, result)
 
 		log.Printf("[%s] probe ok (%s): connect=%.3fs ttft=%.2fs duration=%.2fs tokens=%d/%d rate=%.1ftok/s",
 			t.Name,
@@ -305,20 +311,57 @@ func (s *Scheduler) probe(ctx context.Context, r targetRunner, labels prometheus
 			metrics.ProbeConnectDuration.With(labels).Observe(result.ConnectDuration.Seconds())
 		}
 		if result.ErrorType != "" {
+			statusLabel := "0"
+			if result.HTTPStatusCode > 0 {
+				statusLabel = strconv.Itoa(result.HTTPStatusCode)
+			}
 			errorLabels := prometheus.Labels{
 				"provider":   labels["provider"],
 				"model":      labels["model"],
 				"endpoint":   labels["endpoint"],
 				"api_format": labels["api_format"],
 				"error_type": result.ErrorType,
+				"status":     statusLabel,
 			}
 			metrics.ProbeErrors.With(errorLabels).Inc()
 		}
+
+		// Emit side-channel metrics even on failure — rate-limit and TLS data
+		// often arrive on a 429/503 response and are useful for alerting.
+		emitSideChannelMetrics(labels, result)
 
 		// Check webhook alert.
 		s.alerter.Check(t.Name)
 	}
 	return result.Success
+}
+
+// emitSideChannelMetrics records metrics that are independent of success/fail:
+// rate-limit remaining (when provider reported one) and TLS cert expiry.
+func emitSideChannelMetrics(labels prometheus.Labels, result *prober.ProbeResult) {
+	if result.RateLimitRemainingRequests >= 0 {
+		rlLabels := prometheus.Labels{
+			"provider":   labels["provider"],
+			"model":      labels["model"],
+			"endpoint":   labels["endpoint"],
+			"api_format": labels["api_format"],
+			"kind":       "requests",
+		}
+		metrics.ProbeRateLimitRemaining.With(rlLabels).Set(float64(result.RateLimitRemainingRequests))
+	}
+	if result.RateLimitRemainingTokens >= 0 {
+		rlLabels := prometheus.Labels{
+			"provider":   labels["provider"],
+			"model":      labels["model"],
+			"endpoint":   labels["endpoint"],
+			"api_format": labels["api_format"],
+			"kind":       "tokens",
+		}
+		metrics.ProbeRateLimitRemaining.With(rlLabels).Set(float64(result.RateLimitRemainingTokens))
+	}
+	if !result.SSLCertNotAfter.IsZero() {
+		metrics.ProbeSSLCertExpiry.With(labels).Set(float64(result.SSLCertNotAfter.Unix()))
+	}
 }
 
 func truncate(s string, maxLen int) string {

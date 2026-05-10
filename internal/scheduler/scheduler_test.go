@@ -209,7 +209,7 @@ func TestAdaptiveNext_Backoff(t *testing.T) {
 	}
 
 	// Further success => still capped at max.
-	interval, consec = adaptiveNext(target, true, 10)
+	interval, _ = adaptiveNext(target, true, 10)
 	if interval != 20*time.Minute {
 		t.Errorf("interval = %v, want 20m (still capped)", interval)
 	}

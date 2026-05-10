@@ -25,16 +25,35 @@ func TestRegister(t *testing.T) {
 	ProbeInputTokens.With(testLabels).Set(10)
 	ProbeOutputTokens.With(testLabels).Set(5)
 	ProbeTotalTokens.With(testLabels).Set(15)
+	ProbeReasoningTokens.With(testLabels).Set(3)
+	ProbeCachedInputTokens.With(testLabels).Set(2)
+	ProbeCacheCreationTokens.With(testLabels).Set(1)
 	ProbeTokenRate.With(testLabels).Set(20)
 	ProbeLastSuccess.With(testLabels).Set(1000)
+	ProbeSSLCertExpiry.With(testLabels).Set(1234567890)
+	rlLabels := prometheus.Labels{
+		"provider":   "openai",
+		"model":      "gpt-4",
+		"endpoint":   "https://api.openai.com",
+		"api_format": "openai",
+		"kind":       "requests",
+	}
+	ProbeRateLimitRemaining.With(rlLabels).Set(100)
 	errorLabels := prometheus.Labels{
 		"provider":   "openai",
 		"model":      "gpt-4",
 		"endpoint":   "https://api.openai.com",
 		"api_format": "openai",
 		"error_type": "timeout",
+		"status":     "0",
 	}
 	ProbeErrors.With(errorLabels).Inc()
+	BuildInfo.With(prometheus.Labels{
+		"version":    "test",
+		"git_commit": "abc",
+		"build_time": "now",
+		"go_version": "go1.23",
+	}).Set(1)
 
 	families, err := reg.Gather()
 	if err != nil {
@@ -42,16 +61,22 @@ func TestRegister(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"llm_probe_success":                        false,
-		"llm_probe_duration_seconds":               false,
-		"llm_probe_connect_duration_seconds":       false,
-		"llm_probe_ttft_seconds":                   false,
-		"llm_probe_input_tokens":                   false,
-		"llm_probe_output_tokens":                  false,
-		"llm_probe_total_tokens":                   false,
-		"llm_probe_token_rate":                     false,
-		"llm_probe_last_success_timestamp_seconds": false,
-		"llm_probe_errors_total":                   false,
+		"llm_probe_success":                                    false,
+		"llm_probe_duration_seconds":                           false,
+		"llm_probe_connect_duration_seconds":                   false,
+		"llm_probe_ttft_seconds":                               false,
+		"llm_probe_input_tokens":                               false,
+		"llm_probe_output_tokens":                              false,
+		"llm_probe_total_tokens":                               false,
+		"llm_probe_reasoning_tokens":                           false,
+		"llm_probe_cached_input_tokens":                        false,
+		"llm_probe_cache_creation_tokens":                      false,
+		"llm_probe_token_rate":                                 false,
+		"llm_probe_last_success_timestamp_seconds":             false,
+		"llm_probe_rate_limit_remaining":                       false,
+		"llm_probe_ssl_earliest_cert_expiry_timestamp_seconds": false,
+		"llm_probe_errors_total":                               false,
+		"llm_exporter_build_info":                              false,
 	}
 
 	for _, f := range families {

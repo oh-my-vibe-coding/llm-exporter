@@ -10,11 +10,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/oh-my-vibe-coding/llm-exporter/internal/config"
@@ -49,9 +51,15 @@ func main() {
 	logTargets(cfg)
 
 	reg := prometheus.NewRegistry()
-	reg.MustRegister(prometheus.NewGoCollector())
-	reg.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+	reg.MustRegister(collectors.NewGoCollector())
+	reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	metrics.Register(reg)
+	metrics.BuildInfo.With(prometheus.Labels{
+		"version":    version.Version,
+		"git_commit": version.GitCommit,
+		"build_time": version.BuildTime,
+		"go_version": runtime.Version(),
+	}).Set(1)
 
 	sched, err := scheduler.New(cfg.Targets, cfg.Webhook)
 	if err != nil {
@@ -87,15 +95,19 @@ func main() {
 	})
 	mux.HandleFunc("/api/v1/targets", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(sched.GetStatuses())
+		if err := json.NewEncoder(w).Encode(sched.GetStatuses()); err != nil {
+			log.Printf("encode /api/v1/targets: %v", err)
+		}
 	})
 	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
+		if err := json.NewEncoder(w).Encode(map[string]string{
 			"version":    version.Version,
 			"git_commit": version.GitCommit,
 			"build_time": version.BuildTime,
-		})
+		}); err != nil {
+			log.Printf("encode /version: %v", err)
+		}
 	})
 
 	server := &http.Server{
@@ -126,7 +138,9 @@ func main() {
 
 	log.Printf("listening on %s", cfg.ListenAddr)
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
-		log.Fatalf("server error: %v", err)
+		log.Printf("server error: %v", err)
+		cancel()
+		os.Exit(1) //nolint:gocritic // cancel() is invoked explicitly above.
 	}
 }
 

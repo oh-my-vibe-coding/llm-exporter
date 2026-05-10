@@ -7,27 +7,44 @@ import (
 var (
 	labels = []string{"provider", "model", "endpoint", "api_format"}
 
+	// durationBuckets extends to 600s to accommodate reasoning models whose
+	// responses routinely run 60–300s. Pair with native histograms for dynamic
+	// bucketing when the scrape backend supports them.
+	durationBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300, 600}
+
+	ttftBuckets    = []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 60, 120}
+	connectBuckets = []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
+
 	ProbeSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llm_probe_success",
 		Help: "Whether the last probe was successful (1 = success, 0 = failure).",
 	}, labels)
 
 	ProbeDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "llm_probe_duration_seconds",
-		Help:    "Total request duration in seconds.",
-		Buckets: []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60},
+		Name:                            "llm_probe_duration_seconds",
+		Help:                            "Total request duration in seconds.",
+		Buckets:                         durationBuckets,
+		NativeHistogramBucketFactor:     1.1,
+		NativeHistogramMaxBucketNumber:  100,
+		NativeHistogramMinResetDuration: 0,
 	}, labels)
 
 	ProbeConnectDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "llm_probe_connect_duration_seconds",
-		Help:    "Connection setup duration (DNS + TCP + TLS) in seconds.",
-		Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
+		Name:                            "llm_probe_connect_duration_seconds",
+		Help:                            "Connection setup duration (DNS + TCP + TLS) in seconds.",
+		Buckets:                         connectBuckets,
+		NativeHistogramBucketFactor:     1.1,
+		NativeHistogramMaxBucketNumber:  100,
+		NativeHistogramMinResetDuration: 0,
 	}, labels)
 
 	ProbeTTFT = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "llm_probe_ttft_seconds",
-		Help:    "Time to first token in seconds.",
-		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20},
+		Name:                            "llm_probe_ttft_seconds",
+		Help:                            "Time to first token in seconds.",
+		Buckets:                         ttftBuckets,
+		NativeHistogramBucketFactor:     1.1,
+		NativeHistogramMaxBucketNumber:  100,
+		NativeHistogramMinResetDuration: 0,
 	}, labels)
 
 	ProbeInputTokens = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -45,6 +62,21 @@ var (
 		Help: "Total tokens consumed by the last probe.",
 	}, labels)
 
+	ProbeReasoningTokens = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_probe_reasoning_tokens",
+		Help: "Reasoning/thinking tokens in the last probe (OpenAI o-series, Gemini thoughts). Anthropic bills these as output_tokens and reports 0 here.",
+	}, labels)
+
+	ProbeCachedInputTokens = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_probe_cached_input_tokens",
+		Help: "Prompt tokens served from provider-side prompt cache in the last probe.",
+	}, labels)
+
+	ProbeCacheCreationTokens = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_probe_cache_creation_tokens",
+		Help: "Tokens written into the provider prompt cache on the last probe (Anthropic cache_creation_input_tokens).",
+	}, labels)
+
 	ProbeTokenRate = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llm_probe_token_rate",
 		Help: "Output token generation rate (tokens/second).",
@@ -55,10 +87,32 @@ var (
 		Help: "Unix timestamp of the last successful probe.",
 	}, labels)
 
+	// ProbeRateLimitRemaining exposes the provider's rate-limit remaining
+	// budget parsed from response headers. Kind is "requests" or "tokens".
+	// Absent when the provider did not return a rate-limit header.
+	ProbeRateLimitRemaining = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_probe_rate_limit_remaining",
+		Help: "Remaining rate-limit budget as reported by the provider in the last probe response headers.",
+	}, append(labels, "kind"))
+
+	// ProbeSSLCertExpiry exposes the earliest PeerCertificate NotAfter as a
+	// Unix timestamp. Only set when the probe performed a TLS handshake.
+	ProbeSSLCertExpiry = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_probe_ssl_earliest_cert_expiry_timestamp_seconds",
+		Help: "Unix timestamp of the earliest TLS peer certificate NotAfter observed on the last probe.",
+	}, labels)
+
 	ProbeErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "llm_probe_errors_total",
-		Help: "Total number of probe errors by type.",
-	}, append(labels, "error_type"))
+		Help: "Total number of probe errors by type and HTTP status code (status=0 for non-HTTP errors).",
+	}, append(labels, "error_type", "status"))
+
+	// BuildInfo exposes build metadata as a constant-1 gauge labelled with
+	// version / commit / build_time / go_version.
+	BuildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llm_exporter_build_info",
+		Help: "A constant 1 value labeled with build metadata for the llm-exporter binary.",
+	}, []string{"version", "git_commit", "build_time", "go_version"})
 )
 
 func Register(reg prometheus.Registerer) {
@@ -70,9 +124,15 @@ func Register(reg prometheus.Registerer) {
 		ProbeInputTokens,
 		ProbeOutputTokens,
 		ProbeTotalTokens,
+		ProbeReasoningTokens,
+		ProbeCachedInputTokens,
+		ProbeCacheCreationTokens,
 		ProbeTokenRate,
 		ProbeLastSuccess,
+		ProbeRateLimitRemaining,
+		ProbeSSLCertExpiry,
 		ProbeErrors,
+		BuildInfo,
 	)
 }
 
@@ -86,9 +146,15 @@ func Reset() {
 	ProbeInputTokens.Reset()
 	ProbeOutputTokens.Reset()
 	ProbeTotalTokens.Reset()
+	ProbeReasoningTokens.Reset()
+	ProbeCachedInputTokens.Reset()
+	ProbeCacheCreationTokens.Reset()
 	ProbeTokenRate.Reset()
 	ProbeLastSuccess.Reset()
+	ProbeRateLimitRemaining.Reset()
+	ProbeSSLCertExpiry.Reset()
 	// Note: ProbeErrors (Counter) is also reset. Prometheus handles counter
 	// resets gracefully. This only happens on config reload, which is infrequent.
 	ProbeErrors.Reset()
+	// BuildInfo is deliberately NOT reset — it's a constant per binary.
 }
