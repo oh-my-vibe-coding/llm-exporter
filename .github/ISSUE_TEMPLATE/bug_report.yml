@@ -13,7 +13,7 @@ body:
     attributes:
       label: Version
       description: Output of `llm-exporter --version`
-      placeholder: "e.g. v2.0.5"
+      placeholder: "e.g. v2.1.0"
     validations:
       required: true
 
