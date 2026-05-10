@@ -74,21 +74,21 @@ func (m Module) ToTarget(name, endpoint string) Target {
 }
 
 type Target struct {
-	Name         string            `yaml:"name"`
-	Endpoint     string            `yaml:"endpoint"`
-	APIKey       string            `yaml:"api_key"`
-	Model        string            `yaml:"model"`
-	Prompt       string            `yaml:"prompt"`
-	Prompts      []string          `yaml:"prompts"`
-	APIFormat    string            `yaml:"api_format"`
-	Timeout      time.Duration     `yaml:"timeout"`
-	Interval     time.Duration     `yaml:"interval"`
-	MaxTokens    int               `yaml:"max_tokens"`
-	ChatPath     string            `yaml:"chat_path"`
-	APIVersion   string            `yaml:"api_version"`
-	ExtraHeaders map[string]string `yaml:"extra_headers"`
-	Stream       *bool             `yaml:"stream"`
-	ExpectPattern string           `yaml:"expect_pattern"`
+	Name          string            `yaml:"name"`
+	Endpoint      string            `yaml:"endpoint"`
+	APIKey        string            `yaml:"api_key"`
+	Model         string            `yaml:"model"`
+	Prompt        string            `yaml:"prompt"`
+	Prompts       []string          `yaml:"prompts"`
+	APIFormat     string            `yaml:"api_format"`
+	Timeout       time.Duration     `yaml:"timeout"`
+	Interval      time.Duration     `yaml:"interval"`
+	MaxTokens     int               `yaml:"max_tokens"`
+	ChatPath      string            `yaml:"chat_path"`
+	APIVersion    string            `yaml:"api_version"`
+	ExtraHeaders  map[string]string `yaml:"extra_headers"`
+	Stream        *bool             `yaml:"stream"`
+	ExpectPattern string            `yaml:"expect_pattern"`
 
 	// Light probe mode: most probes use minimal tokens, only periodic full probes.
 	// FullProbeEvery=0 disables light mode (default). FullProbeEvery=10 means
