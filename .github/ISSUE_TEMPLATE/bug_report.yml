@@ -1,0 +1,69 @@
+name: Bug report
+description: Report a defect in llm-exporter
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill in as much as
+        you can — reproduction steps are the single most useful thing.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `llm-exporter --version`
+      placeholder: "e.g. v2.0.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: api_format
+    attributes:
+      label: Affected api_format
+      options:
+        - openai
+        - openai-responses
+        - anthropic
+        - google
+        - azure
+        - n/a (not probe-related)
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: What did you expect? What did you see instead?
+      placeholder: |
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Please include a minimal config or `curl` transcript if possible.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste log output, `/metrics` excerpts, or error messages.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I scrubbed any API keys and secrets from my config/logs.
+          required: true
+        - label: I searched existing issues and could not find a duplicate.
+          required: true
