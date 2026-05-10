@@ -5,14 +5,35 @@ listen_addr: ":9101"
 #   url: "https://hooks.slack.com/services/xxx/yyy/zzz"
 #   consecutive_failures: 3   # alert after N consecutive failures (default: 3)
 
+# Modules (optional): reusable probe profiles consumed by the blackbox-style
+# /probe?target=<endpoint>&module=<name> endpoint. Useful when you want
+# Prometheus-driven dynamic target discovery (file_sd, Consul, Kubernetes)
+# rather than the static `targets:` block below.
+#
+# modules:
+#   openai-compat-small:
+#     api_format: openai
+#     model: gpt-5.4-mini
+#     api_key: "${OPENAI_API_KEY}"
+#     max_tokens: 20
+#     timeout: 30s
+#   anthropic-small:
+#     api_format: anthropic
+#     model: claude-haiku-4-5
+#     api_key: "${ANTHROPIC_API_KEY}"
+#     max_tokens: 20
+#     timeout: 30s
+
 targets:
-  # OpenAI GPT-4o
-  - name: openai-gpt4o
+  # ── Flagship providers (scheduled probes) ─────────────────────────────
+
+  # OpenAI GPT-5.5 via Chat Completions
+  - name: openai-gpt-5.5
     endpoint: "https://api.openai.com"
     api_key: "${OPENAI_API_KEY}"
-    model: "gpt-4o"
+    model: "gpt-5.5"
     api_format: openai
-    timeout: 30s
+    timeout: 60s
     interval: 300s
     # Light probe mode: 9 out of 10 probes use minimal tokens to reduce cost.
     # full_probe_every: 10
@@ -37,53 +58,64 @@ targets:
     # Non-streaming mode (default: true). Set to false for simpler APIs.
     # stream: false
 
-  # Anthropic Claude
-  - name: anthropic-claude
+  # OpenAI Responses API (recommended for reasoning models + reasoning_tokens)
+  - name: openai-responses-gpt-5.5
+    endpoint: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY}"
+    model: "gpt-5.5"
+    api_format: openai-responses
+    timeout: 120s
+    interval: 600s
+
+  # Anthropic Claude (current flagship as of 2026-05)
+  - name: anthropic-claude-opus-4.7
     endpoint: "https://api.anthropic.com"
     api_key: "${ANTHROPIC_API_KEY}"
-    model: "claude-sonnet-4-20250514"
+    model: "claude-opus-4-7"
     api_format: anthropic
-    timeout: 30s
+    timeout: 60s
     interval: 300s
 
   # Google Gemini
-  - name: google-gemini
+  - name: google-gemini-3.1-pro
     endpoint: "https://generativelanguage.googleapis.com"
     api_key: "${GOOGLE_API_KEY}"
-    model: "gemini-2.0-flash"
+    model: "gemini-3.1-pro"
     api_format: google
-    timeout: 30s
+    timeout: 60s
     interval: 300s
 
   # Azure OpenAI
-  - name: azure-gpt4o
+  - name: azure-gpt-5.4
     endpoint: "${AZURE_OPENAI_ENDPOINT}"
     api_key: "${AZURE_OPENAI_API_KEY}"
-    model: "gpt-4o"
+    model: "gpt-5.4"
     api_format: azure
-    # api_version: "2024-10-21"   # 默认值
-    timeout: 30s
+    # api_version: "2024-10-21"   # default
+    timeout: 60s
     interval: 300s
 
-  # OpenRouter (OpenAI 兼容接口)
+  # ── OpenAI-compatible aggregators & routers ───────────────────────────
+
+  # OpenRouter
   - name: openrouter-claude
     endpoint: "https://openrouter.ai/api"
     api_key: "${OPENROUTER_API_KEY}"
-    model: "anthropic/claude-sonnet-4"
+    model: "anthropic/claude-opus-4-7"
     api_format: openai
-    timeout: 30s
+    timeout: 60s
     interval: 300s
 
-  # DeepSeek (OpenAI 兼容接口)
-  - name: deepseek-chat
+  # DeepSeek
+  - name: deepseek-v4-pro
     endpoint: "https://api.deepseek.com"
     api_key: "${DEEPSEEK_API_KEY}"
-    model: "deepseek-chat"
+    model: "deepseek-v4-pro"
     api_format: openai
-    timeout: 30s
+    timeout: 60s
     interval: 300s
 
-  # Mistral (OpenAI 兼容接口)
+  # Mistral
   - name: mistral-large
     endpoint: "https://api.mistral.ai"
     api_key: "${MISTRAL_API_KEY}"
@@ -92,7 +124,77 @@ targets:
     timeout: 30s
     interval: 300s
 
-  # 阿里百炼 (DashScope - OpenAI 兼容接口)
+  # ── High-throughput / low-latency inference providers ─────────────────
+
+  # xAI Grok (OpenAI-compatible). `grok-4`/`grok-4-fast` retired 2026-05-15.
+  # - name: xai-grok
+  #   endpoint: "https://api.x.ai"
+  #   api_key: "${XAI_API_KEY}"
+  #   model: "grok-4.3"
+  #   api_format: openai
+  #   chat_path: "/v1/chat/completions"
+  #   timeout: 30s
+  #   interval: 300s
+
+  # Groq LPU inference (OpenAI-compatible).
+  # - name: groq-llama
+  #   endpoint: "https://api.groq.com/openai"
+  #   api_key: "${GROQ_API_KEY}"
+  #   model: "llama-3.3-70b-versatile"
+  #   api_format: openai
+  #   timeout: 30s
+  #   interval: 300s
+
+  # Cerebras Inference (OpenAI-compatible).
+  # - name: cerebras-llama
+  #   endpoint: "https://api.cerebras.ai"
+  #   api_key: "${CEREBRAS_API_KEY}"
+  #   model: "llama-3.3-70b"
+  #   api_format: openai
+  #   timeout: 30s
+  #   interval: 300s
+
+  # Together AI (OpenAI-compatible).
+  # - name: together-qwen
+  #   endpoint: "https://api.together.xyz"
+  #   api_key: "${TOGETHER_API_KEY}"
+  #   model: "Qwen/Qwen3-72B-Instruct"
+  #   api_format: openai
+  #   timeout: 60s
+  #   interval: 300s
+
+  # Fireworks AI (OpenAI-compatible; note chat_path prefix).
+  # - name: fireworks-kimi
+  #   endpoint: "https://api.fireworks.ai"
+  #   api_key: "${FIREWORKS_API_KEY}"
+  #   model: "accounts/fireworks/models/kimi-k2-instruct"
+  #   api_format: openai
+  #   chat_path: "/inference/v1/chat/completions"
+  #   timeout: 60s
+  #   interval: 300s
+
+  # Perplexity Sonar (OpenAI-compatible).
+  # - name: perplexity-sonar-pro
+  #   endpoint: "https://api.perplexity.ai"
+  #   api_key: "${PERPLEXITY_API_KEY}"
+  #   model: "sonar-pro"
+  #   api_format: openai
+  #   timeout: 60s
+  #   interval: 300s
+
+  # Cohere (OpenAI-compatible via /compatibility/v1).
+  # - name: cohere-command-a
+  #   endpoint: "https://api.cohere.ai"
+  #   api_key: "${COHERE_API_KEY}"
+  #   model: "command-a-03-2025"
+  #   api_format: openai
+  #   chat_path: "/compatibility/v1/chat/completions"
+  #   timeout: 60s
+  #   interval: 300s
+
+  # ── China providers (OpenAI-compatible surfaces) ──────────────────────
+
+  # 阿里百炼 (DashScope)
   - name: dashscope-qwen
     endpoint: "https://dashscope.aliyuncs.com/compatible-mode"
     api_key: "${DASHSCOPE_API_KEY}"
@@ -101,7 +203,7 @@ targets:
     timeout: 30s
     interval: 300s
 
-  # 字节方舟 (Ark - OpenAI 兼容接口)
+  # 字节方舟 (Ark)
   - name: ark-pro
     endpoint: "https://ark.cn-beijing.volces.com/api"
     api_key: "${ARK_API_KEY}"
@@ -110,14 +212,43 @@ targets:
     timeout: 30s
     interval: 300s
 
-  # 自定义代理 API (OpenAI 兼容)
-  # 支持 chat_path 自定义路径，extra_headers 自定义请求头
+  # Moonshot / Kimi
+  # - name: moonshot-kimi
+  #   endpoint: "https://api.moonshot.cn"
+  #   api_key: "${MOONSHOT_API_KEY}"
+  #   model: "kimi-k2.6"
+  #   api_format: openai
+  #   timeout: 60s
+  #   interval: 300s
+
+  # 智谱 GLM (BigModel)
+  # - name: zhipu-glm
+  #   endpoint: "https://open.bigmodel.cn/api/paas"
+  #   api_key: "${ZHIPU_API_KEY}"
+  #   model: "glm-4.6"
+  #   api_format: openai
+  #   chat_path: "/v4/chat/completions"
+  #   timeout: 60s
+  #   interval: 300s
+
+  # SiliconFlow (硅基流动)
+  # - name: siliconflow-deepseek
+  #   endpoint: "https://api.siliconflow.cn"
+  #   api_key: "${SILICONFLOW_API_KEY}"
+  #   model: "deepseek-ai/DeepSeek-V4"
+  #   api_format: openai
+  #   timeout: 60s
+  #   interval: 300s
+
+  # ── Self-hosted & custom ──────────────────────────────────────────────
+
+  # Custom OpenAI-compatible proxy (with chat_path and extra headers)
   - name: my-proxy
     endpoint: "https://my-proxy.example.com"
     api_key: "${PROXY_API_KEY}"
-    model: "gpt-4o"
+    model: "gpt-5.5"
     api_format: openai
-    chat_path: "/v1/chat/completions"   # 可改为代理的自定义路径
+    chat_path: "/v1/chat/completions"
     extra_headers:
       X-Custom-Auth: "${PROXY_TOKEN}"
     timeout: 30s

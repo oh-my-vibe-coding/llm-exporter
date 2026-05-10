@@ -1,0 +1,110 @@
+# Example Prometheus recording + alerting rules for llm-exporter.
+#
+# Drop this file into your Prometheus rule_files path and reload. Thresholds
+# are starting points — tune for your SLOs. Alert labels match common
+# Alertmanager routing conventions (severity: warning | critical).
+#
+# Metrics referenced:
+#   - llm_probe_success
+#   - llm_probe_duration_seconds
+#   - llm_probe_ttft_seconds
+#   - llm_probe_errors_total{error_type,status}
+#   - llm_probe_ssl_earliest_cert_expiry_timestamp_seconds
+#   - llm_probe_rate_limit_remaining{kind}
+#   - llm_probe_total_tokens
+#   - llm_exporter_build_info
+#   - up{job="llm-exporter"}
+#
+# Adjust the `job` label below to match your scrape config.
+
+groups:
+  - name: llm-exporter-recording
+    interval: 60s
+    rules:
+      # Error ratio per (provider, model) over 5 minutes.
+      - record: llm:probe_error_ratio:5m
+        expr: |
+          sum by (provider, model) (rate(llm_probe_errors_total[5m]))
+            /
+          clamp_min(
+            sum by (provider, model) (rate(llm_probe_errors_total[5m]))
+            + sum by (provider, model) (changes(llm_probe_last_success_timestamp_seconds[5m])),
+            1
+          )
+
+      # TTFT p95 per provider (native histograms supported; classic fallback).
+      - record: llm:probe_ttft_seconds:p95:5m
+        expr: histogram_quantile(0.95, sum by (provider, model, le) (rate(llm_probe_ttft_seconds_bucket[5m])))
+
+      # Total latency p95.
+      - record: llm:probe_duration_seconds:p95:5m
+        expr: histogram_quantile(0.95, sum by (provider, model, le) (rate(llm_probe_duration_seconds_bucket[5m])))
+
+      # Token consumption rate (tokens/minute) per provider — handy for cost
+      # estimation when multiplied by a static price table.
+      - record: llm:probe_tokens_per_minute:5m
+        expr: |
+          sum by (provider, model) (
+            changes(llm_probe_total_tokens[5m]) * llm_probe_total_tokens
+          ) / 5
+
+  - name: llm-exporter-alerts
+    rules:
+      - alert: LLMExporterDown
+        expr: up{job="llm-exporter"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "llm-exporter {{ $labels.instance }} is down"
+          description: "The llm-exporter process has been unreachable for 5 minutes."
+
+      - alert: LLMProbeAllFailing
+        # Every probe for a (provider, model) has failed for 15 minutes.
+        expr: max by (provider, model) (llm_probe_success) == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "All probes failing for {{ $labels.provider }} / {{ $labels.model }}"
+          description: "No successful probe in 15 minutes. Check provider status or API key."
+
+      - alert: LLMProbeHighErrorRatio
+        expr: llm:probe_error_ratio:5m > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated error rate for {{ $labels.provider }} / {{ $labels.model }}"
+          description: "Error ratio over 5m is {{ $value | humanizePercentage }}."
+
+      - alert: LLMProbeTTFTRegression
+        # TTFT doubled vs the 1-hour baseline.
+        expr: |
+          llm:probe_ttft_seconds:p95:5m
+            >
+          2 * avg_over_time(llm:probe_ttft_seconds:p95:5m[1h] offset 1h)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TTFT p95 regression for {{ $labels.provider }} / {{ $labels.model }}"
+          description: "5-minute p95 TTFT is more than 2x the prior hour's average."
+
+      - alert: LLMProbeSSLCertExpiringSoon
+        expr: llm_probe_ssl_earliest_cert_expiry_timestamp_seconds - time() < 14 * 24 * 3600
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS cert for {{ $labels.provider }} expires in <14 days"
+          description: "Certificate NotAfter is {{ $value | humanizeDuration }} away."
+
+      - alert: LLMProbeRateLimitAlmostExhausted
+        expr: llm_probe_rate_limit_remaining{kind="requests"} < 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate-limit requests budget near exhaustion for {{ $labels.provider }}"
+          description: "Only {{ $value }} requests remaining in the provider's window."
