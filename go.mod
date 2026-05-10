@@ -1,6 +1,8 @@
 module github.com/oh-my-vibe-coding/llm-exporter
 
-go 1.22
+go 1.23
+
+toolchain go1.23.4
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
