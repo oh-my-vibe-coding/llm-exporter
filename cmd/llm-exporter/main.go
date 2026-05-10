@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -24,6 +25,10 @@ import (
 	"github.com/oh-my-vibe-coding/llm-exporter/internal/scheduler"
 	"github.com/oh-my-vibe-coding/llm-exporter/internal/version"
 )
+
+// currentConfig holds the most recently loaded config. Updated by Load at
+// startup and by reload(). Read by the /probe handler to resolve modules.
+var currentConfig atomic.Pointer[config.Config]
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
@@ -41,6 +46,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
+	currentConfig.Store(cfg)
 
 	if *validate {
 		log.Printf("config is valid: %d targets", len(cfg.Targets))
@@ -109,6 +115,7 @@ func main() {
 			log.Printf("encode /version: %v", err)
 		}
 	})
+	mux.HandleFunc("/probe", probeHandler(currentConfig.Load))
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -208,6 +215,7 @@ func reload(ctx context.Context, configPath string, sched *scheduler.Scheduler) 
 	if err := sched.Reload(ctx, cfg.Targets, cfg.Webhook); err != nil {
 		return fmt.Errorf("reload scheduler: %w", err)
 	}
+	currentConfig.Store(cfg)
 	logTargets(cfg)
 	log.Printf("reload complete")
 	return nil

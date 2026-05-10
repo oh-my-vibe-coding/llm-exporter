@@ -127,7 +127,7 @@ func TestLoad_Validation(t *testing.T) {
 		{
 			"empty targets",
 			"targets: []",
-			"no targets configured",
+			"no targets or modules configured",
 		},
 		{
 			"duplicate target name",

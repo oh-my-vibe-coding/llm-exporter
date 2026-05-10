@@ -10,14 +10,67 @@ import (
 )
 
 type Config struct {
-	ListenAddr string         `yaml:"listen_addr"`
-	Targets    []Target       `yaml:"targets"`
-	Webhook    *WebhookConfig `yaml:"webhook"`
+	ListenAddr string            `yaml:"listen_addr"`
+	Targets    []Target          `yaml:"targets"`
+	Webhook    *WebhookConfig    `yaml:"webhook"`
+	Modules    map[string]Module `yaml:"modules"`
 }
 
 type WebhookConfig struct {
 	URL                 string `yaml:"url"`
 	ConsecutiveFailures int    `yaml:"consecutive_failures"`
+}
+
+// Module is a reusable probe profile used by the /probe?module=<name>&target=<url>
+// endpoint (blackbox_exporter-style multi-target mode). The target URL from
+// the query string becomes Endpoint at probe time; every other field is read
+// from the module.
+type Module struct {
+	APIFormat     string            `yaml:"api_format"`
+	APIKey        string            `yaml:"api_key"`
+	Model         string            `yaml:"model"`
+	Prompt        string            `yaml:"prompt"`
+	APIVersion    string            `yaml:"api_version"`
+	ChatPath      string            `yaml:"chat_path"`
+	ExtraHeaders  map[string]string `yaml:"extra_headers"`
+	Timeout       time.Duration     `yaml:"timeout"`
+	MaxTokens     int               `yaml:"max_tokens"`
+	Stream        *bool             `yaml:"stream"`
+	ExpectPattern string            `yaml:"expect_pattern"`
+}
+
+// ToTarget materializes a Module with the given target URL into a runnable
+// Target. The returned Target is NOT validated by Load; callers relying on
+// defaults should apply them explicitly.
+func (m Module) ToTarget(name, endpoint string) Target {
+	t := Target{
+		Name:          name,
+		Endpoint:      endpoint,
+		APIKey:        m.APIKey,
+		Model:         m.Model,
+		Prompt:        m.Prompt,
+		APIFormat:     m.APIFormat,
+		APIVersion:    m.APIVersion,
+		ChatPath:      m.ChatPath,
+		ExtraHeaders:  m.ExtraHeaders,
+		Timeout:       m.Timeout,
+		MaxTokens:     m.MaxTokens,
+		Stream:        m.Stream,
+		ExpectPattern: m.ExpectPattern,
+	}
+	if t.APIFormat == "" {
+		t.APIFormat = "openai"
+	}
+	if t.Timeout == 0 {
+		t.Timeout = 30 * time.Second
+	}
+	if t.MaxTokens == 0 {
+		t.MaxTokens = 20
+	}
+	if t.Prompt == "" {
+		t.Prompt = "Hi"
+	}
+	return t
 }
 
 type Target struct {
@@ -101,8 +154,19 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	if len(cfg.Targets) == 0 {
-		return nil, fmt.Errorf("no targets configured")
+	if len(cfg.Targets) == 0 && len(cfg.Modules) == 0 {
+		return nil, fmt.Errorf("no targets or modules configured")
+	}
+
+	for name, m := range cfg.Modules {
+		if m.APIFormat != "" && !validAPIFormats[m.APIFormat] {
+			return nil, fmt.Errorf("module %q: unsupported api_format %q (must be one of: openai, openai-responses, azure, anthropic, google)", name, m.APIFormat)
+		}
+		if m.ExpectPattern != "" {
+			if _, err := regexp.Compile(m.ExpectPattern); err != nil {
+				return nil, fmt.Errorf("module %q: invalid expect_pattern: %w", name, err)
+			}
+		}
 	}
 
 	seenNames := make(map[string]int)
