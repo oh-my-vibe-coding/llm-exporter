@@ -1,0 +1,44 @@
+run:
+  timeout: 5m
+  go: "1.23"
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - revive
+    - ineffassign
+    - misspell
+    - unused
+    - goimports
+    - gosec
+    - unconvert
+    - gocritic
+
+linters-settings:
+  gosec:
+    excludes:
+      # G115: integer overflow conversion - legitimate uses in token counting.
+      - G115
+      # G402: TLS MinVersion is enforced by net/http default (TLS 1.2+) in Go 1.23.
+      - G402
+      # G404: math/rand is fine for probe jitter (not security-sensitive).
+      - G404
+  revive:
+    rules:
+      - name: unused-parameter
+        disabled: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
+    # Generated or tightly-coupled code paths may legitimately ignore errors.
+    - path: cmd/llm-exporter/main\.go
+      linters:
+        - errcheck
+      text: "Error return value of `server.Shutdown`"
