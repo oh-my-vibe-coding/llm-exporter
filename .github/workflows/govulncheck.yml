@@ -16,10 +16,10 @@ jobs:
   govulncheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Avoid "Duplicate header: Authorization" when golang/govulncheck-action
-          # does its own nested checkout (actions/checkout@v6 persists credentials
+          # does its own nested checkout (actions/checkout@v7 persists credentials
           # by default; the nested call then adds a second auth header).
           persist-credentials: false
 
